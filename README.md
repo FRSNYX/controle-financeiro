@@ -60,11 +60,12 @@ Para acessar de qualquer máquina e do celular. O plano gratuito atende de sobra
 
 **1. Importar o repositório**
 Em [vercel.com/new](https://vercel.com/new), escolha este repositório e clique em
-**Import**. As configurações de build já vêm no `vercel.json` — não mude nada.
+**Import**. O `vercel.json` declara dois serviços — o site (Vite) em `/` e a API
+(Express) em `/api` — e a Vercel os publica no mesmo endereço.
 
 **2. Criar o banco**
-No projeto, aba **Storage** → **Create Database** → **Neon (Postgres)** → plano
-gratuito. A Vercel injeta a `DATABASE_URL` automaticamente.
+No projeto: aba **Storage** → **Create Database** → **Neon (Postgres)** → plano
+gratuito. A `DATABASE_URL` é injetada automaticamente.
 
 **3. Definir o segredo de sessão**
 Em **Settings** → **Environment Variables**, crie `JWT_SECRET` com um valor longo
@@ -74,7 +75,11 @@ e aleatório:
 node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 ```
 
-**4. Publicar**
+**4. Liberar o acesso público**
+Em **Settings** → **Deployment Protection**, desligue o **Vercel Authentication**.
+Sem isso, só quem tem conta na Vercel consegue abrir o site.
+
+**5. Publicar**
 Aba **Deployments** → **Redeploy**. As tabelas são criadas sozinhas na primeira
 requisição.
 
