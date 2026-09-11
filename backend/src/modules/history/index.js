@@ -41,16 +41,16 @@ router.get(
 
     if (q.entity) { where.push('entity = ?'); params.push(q.entity); }
     if (q.action) { where.push('action = ?'); params.push(q.action); }
-    if (q.from) { where.push('date(created_at) >= ?'); params.push(q.from); }
-    if (q.to) { where.push('date(created_at) <= ?'); params.push(q.to); }
+    if (q.from) { where.push('created_at::date >= ?'); params.push(q.from); }
+    if (q.to) { where.push('created_at::date <= ?'); params.push(q.to); }
     if (q.search) { where.push('summary LIKE ?'); params.push(`%${q.search}%`); }
 
     const clause = where.join(' AND ');
-    const rows = all(
+    const rows = await all(
       `SELECT * FROM audit_log WHERE ${clause} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
       [...params, q.pageSize, (q.page - 1) * q.pageSize],
     );
-    const { total } = get(`SELECT COUNT(*) AS total FROM audit_log WHERE ${clause}`, params);
+    const { total } = await get(`SELECT COUNT(*) AS total FROM audit_log WHERE ${clause}`, params);
 
     res.json({
       data: rows.map((r) => ({
@@ -76,12 +76,12 @@ router.get(
   })),
   asyncHandler(async (req, res) => {
     const q = req.validatedQuery;
-    const rows = all(
+    const rows = await all(
       `${TX_SELECT} WHERE t.user_id = ? AND t.deleted_at IS NOT NULL
         ORDER BY t.deleted_at DESC LIMIT ? OFFSET ?`,
       [req.user.id, q.pageSize, (q.page - 1) * q.pageSize],
     );
-    const { total } = get(
+    const { total } = await get(
       'SELECT COUNT(*) AS total FROM transactions WHERE user_id = ? AND deleted_at IS NOT NULL',
       [req.user.id],
     );
@@ -95,13 +95,13 @@ router.get(
 router.post(
   '/trash/:id/restore',
   asyncHandler(async (req, res) => {
-    const tx = get('SELECT * FROM transactions WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL', [
+    const tx = await get('SELECT * FROM transactions WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL', [
       req.params.id, req.user.id,
     ]);
     if (!tx) throw notFound('Lançamento não encontrado na lixeira');
 
-    run('UPDATE transactions SET deleted_at = NULL WHERE id = ?', [tx.id]);
-    run(
+    await run('UPDATE transactions SET deleted_at = NULL WHERE id = ?', [tx.id]);
+    await run(
       'INSERT INTO audit_log (user_id, entity, entity_id, action, summary) VALUES (?, ?, ?, ?, ?)',
       [req.user.id, 'transactions', tx.id, 'restore', `Lançamento "${tx.description}" restaurado`],
     );
@@ -124,23 +124,23 @@ router.get(
     const like = `%${q}%`;
     const uid = req.user.id;
 
-    const transactions = all(
+    const transactions = (await all(
       `${TX_SELECT}
         WHERE t.user_id = ? AND t.deleted_at IS NULL
           AND (t.description LIKE ? OR t.notes LIKE ? OR t.tags LIKE ?)
         ORDER BY t.due_date DESC LIMIT ?`,
       [uid, like, like, like, limit],
-    ).map((r) => serializeTx(r));
+    )).map((r) => serializeTx(r));
 
     res.json({
       query: q,
       results: {
         transactions,
-        accounts: all('SELECT id, name, type, color FROM accounts WHERE user_id = ? AND name LIKE ? LIMIT ?', [uid, like, limit]),
-        categories: all('SELECT id, name, kind, color FROM categories WHERE user_id = ? AND name LIKE ? LIMIT ?', [uid, like, limit]),
-        cards: all('SELECT id, name, color FROM credit_cards WHERE user_id = ? AND name LIKE ? LIMIT ?', [uid, like, limit]),
-        investments: all('SELECT id, name, ticker, type FROM investments WHERE user_id = ? AND (name LIKE ? OR ticker LIKE ?) LIMIT ?', [uid, like, like, limit]),
-        goals: all('SELECT id, name, target_amount FROM goals WHERE user_id = ? AND name LIKE ? LIMIT ?', [uid, like, limit]),
+        accounts: await all('SELECT id, name, type, color FROM accounts WHERE user_id = ? AND name LIKE ? LIMIT ?', [uid, like, limit]),
+        categories: await all('SELECT id, name, kind, color FROM categories WHERE user_id = ? AND name LIKE ? LIMIT ?', [uid, like, limit]),
+        cards: await all('SELECT id, name, color FROM credit_cards WHERE user_id = ? AND name LIKE ? LIMIT ?', [uid, like, limit]),
+        investments: await all('SELECT id, name, ticker, type FROM investments WHERE user_id = ? AND (name LIKE ? OR ticker LIKE ?) LIMIT ?', [uid, like, like, limit]),
+        goals: await all('SELECT id, name, target_amount FROM goals WHERE user_id = ? AND name LIKE ? LIMIT ?', [uid, like, limit]),
       },
     });
   }),
@@ -159,11 +159,11 @@ router.get(
     const { unreadOnly, limit } = req.validatedQuery;
     const where = unreadOnly ? 'user_id = ? AND read_at IS NULL' : 'user_id = ?';
 
-    const data = all(
+    const data = await all(
       `SELECT * FROM notifications WHERE ${where} ORDER BY created_at DESC LIMIT ?`,
       [req.user.id, limit],
     );
-    const { unread } = get(
+    const { unread } = await get(
       'SELECT COUNT(*) AS unread FROM notifications WHERE user_id = ? AND read_at IS NULL',
       [req.user.id],
     );
@@ -177,13 +177,13 @@ router.post(
   asyncHandler(async (req, res) => {
     if (req.body.ids?.length) {
       const placeholders = req.body.ids.map(() => '?').join(',');
-      run(
-        `UPDATE notifications SET read_at = datetime('now','localtime')
+      await run(
+        `UPDATE notifications SET read_at = NOW()
           WHERE user_id = ? AND id IN (${placeholders})`,
         [req.user.id, ...req.body.ids],
       );
     } else {
-      run("UPDATE notifications SET read_at = datetime('now','localtime') WHERE user_id = ? AND read_at IS NULL", [req.user.id]);
+      await run("UPDATE notifications SET read_at = NOW() WHERE user_id = ? AND read_at IS NULL", [req.user.id]);
     }
     res.json({ ok: true });
   }),
@@ -193,10 +193,10 @@ router.post(
  * Varre vencimentos e gera notificações.
  * A verificação de duplicidade evita repetir o mesmo aviso a cada chamada.
  */
-export function checkDueNotifications(userId, { daysAhead = 3 } = {}) {
+export async function checkDueNotifications(userId, { daysAhead = 3 } = {}) {
   const limit = addDays(today(), daysAhead);
 
-  const upcoming = all(
+  const upcoming = await all(
     `SELECT t.*, c.name AS category_name FROM transactions t
        LEFT JOIN categories c ON c.id = t.category_id
       WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.neutral = 0
@@ -209,14 +209,14 @@ export function checkDueNotifications(userId, { daysAhead = 3 } = {}) {
     const overdue = tx.due_date < today();
     const type = overdue ? 'overdue' : 'due_soon';
 
-    const exists = get(
+    const exists = await get(
       'SELECT id FROM notifications WHERE user_id = ? AND type = ? AND entity = ? AND entity_id = ?',
       [userId, type, 'transactions', tx.id],
     );
     if (exists) continue;
 
     const isIncome = tx.kind === 'income';
-    notify({
+    await notify({
       userId,
       type,
       severity: overdue ? 'danger' : 'warning',
@@ -237,7 +237,7 @@ export function checkDueNotifications(userId, { daysAhead = 3 } = {}) {
 router.post(
   '/notifications/check',
   asyncHandler(async (req, res) => {
-    res.json({ ok: true, created: checkDueNotifications(req.user.id) });
+    res.json({ ok: true, created: await checkDueNotifications(req.user.id) });
   }),
 );
 

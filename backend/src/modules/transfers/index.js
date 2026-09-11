@@ -28,14 +28,14 @@ const schema = z.object({
  * A tarifa (fee), se houver, sai da conta de origem como despesa REAL —
  * é custo de fato, não movimentação neutra.
  */
-function createTransferLegs(userId, tr, accounts) {
+async function createTransferLegs(userId, tr, accounts) {
   const common = {
     description: tr.description,
     competence: tr.date,
     due: tr.date,
   };
 
-  run(
+  await run(
     `INSERT INTO transactions
        (user_id, kind, description, amount, status, neutral, account_id,
         competence_date, due_date, settle_date, transfer_id, notes)
@@ -44,7 +44,7 @@ function createTransferLegs(userId, tr, accounts) {
      common.competence, common.due, tr.date, tr.id, tr.notes ?? null],
   );
 
-  run(
+  await run(
     `INSERT INTO transactions
        (user_id, kind, description, amount, status, neutral, account_id,
         competence_date, due_date, settle_date, transfer_id, notes)
@@ -54,7 +54,7 @@ function createTransferLegs(userId, tr, accounts) {
   );
 
   if (tr.fee > 0) {
-    run(
+    await run(
       `INSERT INTO transactions
          (user_id, kind, description, amount, status, neutral, account_id,
           competence_date, due_date, settle_date, expense_nature, payment_method, transfer_id)
@@ -86,7 +86,7 @@ router.get(
     }
     const clause = where.join(' AND ');
 
-    const rows = all(
+    const rows = await all(
       `SELECT t.*, af.name AS from_account_name, af.color AS from_account_color,
               at.name AS to_account_name,   at.color AS to_account_color
          FROM transfers t
@@ -96,7 +96,7 @@ router.get(
         ORDER BY t.date DESC, t.id DESC LIMIT ? OFFSET ?`,
       [...params, q.pageSize, (q.page - 1) * q.pageSize],
     );
-    const { total } = get(`SELECT COUNT(*) AS total FROM transfers t WHERE ${clause}`, params);
+    const { total } = await get(`SELECT COUNT(*) AS total FROM transfers t WHERE ${clause}`, params);
 
     res.json({
       data: rows,
@@ -112,8 +112,8 @@ router.post(
     const b = req.body;
     if (b.from_account_id === b.to_account_id) throw badRequest('Origem e destino devem ser contas diferentes');
 
-    const from = get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [b.from_account_id, req.user.id]);
-    const to = get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [b.to_account_id, req.user.id]);
+    const from = await get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [b.from_account_id, req.user.id]);
+    const to = await get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [b.to_account_id, req.user.id]);
     if (!from) throw badRequest('Conta de origem não encontrada');
     if (!to) throw badRequest('Conta de destino não encontrada');
 
@@ -123,18 +123,18 @@ router.post(
 
     const date = b.date ?? today();
 
-    const created = transaction(() => {
-      const { lastInsertRowid } = run(
+    const created = await transaction(async () => {
+      const { lastInsertRowid } = await run(
         `INSERT INTO transfers (user_id, from_account_id, to_account_id, amount, fee, date, description, notes)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [req.user.id, from.id, to.id, amount, fee, date, b.description, b.notes ?? null],
       );
       const tr = { id: Number(lastInsertRowid), ...b, amount, fee, date };
-      createTransferLegs(req.user.id, tr, { from, to });
-      return get('SELECT * FROM transfers WHERE id = ?', [tr.id]);
+      await createTransferLegs(req.user.id, tr, { from, to });
+      return await get('SELECT * FROM transfers WHERE id = ?', [tr.id]);
     });
 
-    logAudit({ userId: req.user.id, entity: 'transfers', entityId: created.id, action: 'create', summary: `Transferência ${from.name} → ${to.name}`, after: created });
+    await logAudit({ userId: req.user.id, entity: 'transfers', entityId: created.id, action: 'create', summary: `Transferência ${from.name} → ${to.name}`, after: created });
     res.status(201).json({ data: created });
   }),
 );
@@ -143,7 +143,7 @@ router.patch(
   '/:id',
   validate(schema.partial()),
   asyncHandler(async (req, res) => {
-    const before = get('SELECT * FROM transfers WHERE id = ? AND user_id = ? AND deleted_at IS NULL', [req.params.id, req.user.id]);
+    const before = await get('SELECT * FROM transfers WHERE id = ? AND user_id = ? AND deleted_at IS NULL', [req.params.id, req.user.id]);
     if (!before) throw notFound('Transferência não encontrada');
 
     const b = req.body;
@@ -158,24 +158,24 @@ router.patch(
     };
     if (next.from_account_id === next.to_account_id) throw badRequest('Origem e destino devem ser contas diferentes');
 
-    const from = get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [next.from_account_id, req.user.id]);
-    const to = get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [next.to_account_id, req.user.id]);
+    const from = await get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [next.from_account_id, req.user.id]);
+    const to = await get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [next.to_account_id, req.user.id]);
     if (!from || !to) throw badRequest('Conta não encontrada');
 
-    const after = transaction(() => {
-      run(
+    const after = await transaction(async () => {
+      await run(
         `UPDATE transfers SET from_account_id = ?, to_account_id = ?, amount = ?, fee = ?,
-                              date = ?, description = ?, notes = ?, updated_at = datetime('now','localtime')
+                              date = ?, description = ?, notes = ?, updated_at = NOW()
           WHERE id = ?`,
         [next.from_account_id, next.to_account_id, next.amount, next.fee, next.date, next.description, next.notes, before.id],
       );
       // Recriar as pernas é mais simples e seguro do que sincronizá-las campo a campo.
       run('DELETE FROM transactions WHERE transfer_id = ?', [before.id]);
-      createTransferLegs(req.user.id, { id: before.id, ...next }, { from, to });
-      return get('SELECT * FROM transfers WHERE id = ?', [before.id]);
+      await createTransferLegs(req.user.id, { id: before.id, ...next }, { from, to });
+      return await get('SELECT * FROM transfers WHERE id = ?', [before.id]);
     });
 
-    logAudit({ userId: req.user.id, entity: 'transfers', entityId: before.id, action: 'update', summary: 'Transferência editada', before, after });
+    await logAudit({ userId: req.user.id, entity: 'transfers', entityId: before.id, action: 'update', summary: 'Transferência editada', before, after });
     res.json({ data: after });
   }),
 );
@@ -183,15 +183,15 @@ router.patch(
 router.delete(
   '/:id',
   asyncHandler(async (req, res) => {
-    const tr = get('SELECT * FROM transfers WHERE id = ? AND user_id = ? AND deleted_at IS NULL', [req.params.id, req.user.id]);
+    const tr = await get('SELECT * FROM transfers WHERE id = ? AND user_id = ? AND deleted_at IS NULL', [req.params.id, req.user.id]);
     if (!tr) throw notFound('Transferência não encontrada');
 
-    transaction(() => {
-      run("UPDATE transfers SET deleted_at = datetime('now','localtime') WHERE id = ?", [tr.id]);
-      run("UPDATE transactions SET deleted_at = datetime('now','localtime') WHERE transfer_id = ?", [tr.id]);
+    await transaction(async () => {
+      await run("UPDATE transfers SET deleted_at = NOW() WHERE id = ?", [tr.id]);
+      await run("UPDATE transactions SET deleted_at = NOW() WHERE transfer_id = ?", [tr.id]);
     });
 
-    logAudit({ userId: req.user.id, entity: 'transfers', entityId: tr.id, action: 'delete', summary: 'Transferência excluída', before: tr });
+    await logAudit({ userId: req.user.id, entity: 'transfers', entityId: tr.id, action: 'delete', summary: 'Transferência excluída', before: tr });
     res.json({ ok: true });
   }),
 );

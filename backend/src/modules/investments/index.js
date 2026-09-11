@@ -4,8 +4,9 @@ import { all, get, run, transaction, buildUpdate } from '../../db/index.js';
 import { validate, validateQuery } from '../../middleware/validate.js';
 import { asyncHandler, badRequest, notFound } from '../../utils/errors.js';
 import { toCents, pct } from '../../utils/money.js';
-import { today, monthKey, monthsBetween } from '../../utils/dates.js';
+import { today, monthKey, monthRange, monthsBetween } from '../../utils/dates.js';
 import { logAudit } from '../../utils/audit.js';
+import { buildMonthlySeries } from '../../utils/series.js';
 
 const router = Router();
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -38,13 +39,13 @@ const schema = z.object({
 });
 
 /** Enriquece o ativo com rentabilidade e proventos acumulados. */
-function decorate(inv) {
+async function decorate(inv) {
   const profit = inv.current_value - inv.invested_amount;
-  const income = get(
+  const income = (await get(
     `SELECT COALESCE(SUM(amount), 0) AS total FROM investment_movements
       WHERE investment_id = ? AND type IN ('dividend','interest','jcp','rent')`,
     [inv.id],
-  ).total;
+  )).total;
 
   return {
     ...inv,
@@ -64,8 +65,8 @@ function decorate(inv) {
  * Preço médio sobe apenas com aportes; retirada reduz quantidade mantendo o PM.
  * Proventos não alteram a posição — são renda, contabilizada à parte.
  */
-function recalcPosition(userId, investmentId) {
-  const movements = all(
+async function recalcPosition(userId, investmentId) {
+  const movements = await all(
     'SELECT * FROM investment_movements WHERE investment_id = ? ORDER BY date ASC, id ASC',
     [investmentId],
   );
@@ -87,9 +88,9 @@ function recalcPosition(userId, investmentId) {
   }
 
   const avgPrice = qty > 0 ? Math.round(invested / qty) : 0;
-  run(
+  await run(
     `UPDATE investments SET quantity = ?, invested_amount = ?, avg_price = ?,
-                            updated_at = datetime('now','localtime')
+                            updated_at = NOW()
       WHERE id = ? AND user_id = ?`,
     [qty, Math.max(0, invested), avgPrice, investmentId, userId],
   );
@@ -113,10 +114,12 @@ router.get(
     if (q.type) { where.push('type = ?'); params.push(q.type); }
     if (q.search) { where.push('(name LIKE ? OR ticker LIKE ?)'); params.push(`%${q.search}%`, `%${q.search}%`); }
 
-    const data = all(
+    const rows = await all(
       `SELECT * FROM investments WHERE ${where.join(' AND ')} ORDER BY current_value DESC, name`,
       params,
-    ).map(decorate);
+    );
+    // `decorate` consulta os proventos de cada ativo: resolvem em paralelo.
+    const data = await Promise.all(rows.map(decorate));
 
     const invested = data.reduce((s, i) => s + i.invested_amount, 0);
     const current = data.reduce((s, i) => s + i.current_value, 0);
@@ -142,7 +145,7 @@ router.get(
 router.get(
   '/allocation',
   asyncHandler(async (req, res) => {
-    const rows = all(
+    const rows = await all(
       `SELECT type, COUNT(*) AS count,
               COALESCE(SUM(invested_amount), 0) AS invested,
               COALESCE(SUM(current_value), 0)   AS current_value
@@ -179,62 +182,70 @@ router.get(
     startDate.setMonth(startDate.getMonth() - (months - 1));
     const startISO = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}-01`;
 
-    const series = monthsBetween(startISO, today()).map((ym) => {
-      const end = `${ym}-31`;
+    const list = monthsBetween(startISO, today());
 
-      const flows = get(
-        `SELECT
-           COALESCE(SUM(CASE WHEN type = 'contribution' THEN amount
-                             WHEN type = 'withdrawal'   THEN -amount ELSE 0 END), 0) AS invested,
-           COALESCE(SUM(CASE WHEN type IN ('dividend','interest','jcp','rent') THEN amount ELSE 0 END), 0) AS income
-         FROM investment_movements WHERE user_id = ? AND date <= ?`,
-        [req.user.id, end],
-      );
+    // Fluxos acumulados por mês e marcação a mercado saem de duas consultas,
+    // não de duas por mês.
+    const [flowRows, series] = await Promise.all([
+      all(
+        `SELECT to_char(date, 'YYYY-MM') AS ym,
+                COALESCE(SUM(CASE WHEN type = 'contribution' THEN amount
+                                  WHEN type = 'withdrawal'   THEN -amount ELSE 0 END), 0) AS invested,
+                COALESCE(SUM(CASE WHEN type IN ('dividend','interest','jcp','rent') THEN amount ELSE 0 END), 0) AS income
+           FROM investment_movements
+          WHERE user_id = ? AND date <= ?
+          GROUP BY ym ORDER BY ym`,
+        [req.user.id, monthRange(list.at(-1)).end],
+      ),
+      buildMonthlySeries(req.user.id, list, { includePhysical: false }),
+    ]);
 
-      const { market } = get(
-        `SELECT COALESCE(SUM(
-                  COALESCE((SELECT v.market_value FROM asset_valuations v
-                             WHERE v.investment_id = i.id AND v.date <= ?
-                             ORDER BY v.date DESC LIMIT 1), i.invested_amount)
-                ), 0) AS market
-           FROM investments i
-          WHERE i.user_id = ? AND i.purchase_date <= ?`,
-        [end, req.user.id, end],
-      );
+    // Os aportes são acumulados: o total investido num mês inclui tudo que veio antes.
+    let investedAcc = 0;
+    let incomeAcc = 0;
+    const flowsByMonth = new Map(flowRows.map((r) => [r.ym, r]));
+
+    const data = list.map((ym, i) => {
+      const f = flowsByMonth.get(ym);
+      if (f) {
+        investedAcc += f.invested;
+        incomeAcc += f.income;
+      }
+      const market = series[i]?.investments ?? 0;
 
       return {
         month: ym,
-        invested: Math.max(0, flows.invested),
-        income_accumulated: flows.income,
+        invested: Math.max(0, investedAcc),
+        income_accumulated: incomeAcc,
         market_value: market,
-        profit: market - Math.max(0, flows.invested),
+        profit: market - Math.max(0, investedAcc),
       };
     });
 
-    res.json({ data: series });
+    res.json({ data });
   }),
 );
 
 router.get(
   '/:id',
   asyncHandler(async (req, res) => {
-    const inv = get('SELECT * FROM investments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const inv = await get('SELECT * FROM investments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!inv) throw notFound('Investimento não encontrado');
 
-    const movements = all(
+    const movements = await all(
       `SELECT m.*, a.name AS account_name FROM investment_movements m
          LEFT JOIN accounts a ON a.id = m.account_id
         WHERE m.investment_id = ? ORDER BY m.date DESC, m.id DESC`,
       [inv.id],
     );
-    const valuations = all(
+    const valuations = await all(
       'SELECT * FROM asset_valuations WHERE investment_id = ? ORDER BY date ASC',
       [inv.id],
     );
 
     res.json({
       data: {
-        ...decorate(inv),
+        ...(await decorate(inv)),
         movements,
         valuations,
         contributions: movements.filter((m) => m.type === 'contribution'),
@@ -253,8 +264,8 @@ router.post(
     const invested = toCents(b.invested_amount);
     const currentValue = toCents(b.current_value) || invested;
 
-    const created = transaction(() => {
-      const { lastInsertRowid } = run(
+    const created = await transaction(async () => {
+      const { lastInsertRowid } = await run(
         `INSERT INTO investments
            (user_id, name, ticker, type, institution, quantity, avg_price, invested_amount,
             current_value, purchase_date, maturity_date, index_ref, notes)
@@ -267,24 +278,24 @@ router.post(
 
       // O aporte inicial vira movimento: o histórico nasce completo.
       if (invested > 0) {
-        run(
+        await run(
           `INSERT INTO investment_movements
              (user_id, investment_id, type, quantity, unit_price, amount, date, notes)
            VALUES (?, ?, 'contribution', ?, ?, ?, ?, 'Aporte inicial')`,
           [req.user.id, id, b.quantity, toCents(b.avg_price), invested, b.purchase_date],
         );
       }
-      run(
+      await run(
         `INSERT INTO asset_valuations (user_id, investment_id, date, market_value)
          VALUES (?, ?, ?, ?) ON CONFLICT(investment_id, date) DO UPDATE SET market_value = excluded.market_value`,
         [req.user.id, id, b.purchase_date, currentValue],
       );
 
-      return get('SELECT * FROM investments WHERE id = ?', [id]);
+      return await get('SELECT * FROM investments WHERE id = ?', [id]);
     });
 
-    logAudit({ userId: req.user.id, entity: 'investments', entityId: created.id, action: 'create', summary: `Investimento "${created.name}" cadastrado`, after: created });
-    res.status(201).json({ data: decorate(created) });
+    await logAudit({ userId: req.user.id, entity: 'investments', entityId: created.id, action: 'create', summary: `Investimento "${created.name}" cadastrado`, after: created });
+    res.status(201).json({ data: await decorate(created) });
   }),
 );
 
@@ -292,11 +303,11 @@ router.patch(
   '/:id',
   validate(schema.partial().extend({ archived: z.boolean().optional() })),
   asyncHandler(async (req, res) => {
-    const before = get('SELECT * FROM investments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const before = await get('SELECT * FROM investments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!before) throw notFound('Investimento não encontrado');
 
     const b = req.body;
-    buildUpdate('investments', before.id, req.user.id, {
+    await buildUpdate('investments', before.id, req.user.id, {
       name: b.name, ticker: b.ticker, type: b.type, institution: b.institution,
       quantity: b.quantity,
       avg_price: b.avg_price !== undefined ? toCents(b.avg_price) : undefined,
@@ -309,27 +320,27 @@ router.patch(
 
     // Atualizar o valor atual é uma marcação a mercado: registra ponto na série.
     if (b.current_value !== undefined) {
-      run(
+      await run(
         `INSERT INTO asset_valuations (user_id, investment_id, date, market_value)
          VALUES (?, ?, ?, ?) ON CONFLICT(investment_id, date) DO UPDATE SET market_value = excluded.market_value`,
         [req.user.id, before.id, today(), toCents(b.current_value)],
       );
     }
 
-    const after = get('SELECT * FROM investments WHERE id = ?', [before.id]);
-    logAudit({ userId: req.user.id, entity: 'investments', entityId: before.id, action: 'update', summary: `Investimento "${after.name}" atualizado`, before, after });
-    res.json({ data: decorate(after) });
+    const after = await get('SELECT * FROM investments WHERE id = ?', [before.id]);
+    await logAudit({ userId: req.user.id, entity: 'investments', entityId: before.id, action: 'update', summary: `Investimento "${after.name}" atualizado`, before, after });
+    res.json({ data: await decorate(after) });
   }),
 );
 
 router.delete(
   '/:id',
   asyncHandler(async (req, res) => {
-    const inv = get('SELECT * FROM investments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const inv = await get('SELECT * FROM investments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!inv) throw notFound('Investimento não encontrado');
 
-    run('DELETE FROM investments WHERE id = ?', [inv.id]); // movimentos caem por CASCADE
-    logAudit({ userId: req.user.id, entity: 'investments', entityId: inv.id, action: 'delete', summary: `Investimento "${inv.name}" excluído`, before: inv });
+    await run('DELETE FROM investments WHERE id = ?', [inv.id]); // movimentos caem por CASCADE
+    await logAudit({ userId: req.user.id, entity: 'investments', entityId: inv.id, action: 'delete', summary: `Investimento "${inv.name}" excluído`, before: inv });
     res.json({ ok: true });
   }),
 );
@@ -350,7 +361,7 @@ router.post(
     create_transaction: z.boolean().optional().default(false),
   })),
   asyncHandler(async (req, res) => {
-    const inv = get('SELECT * FROM investments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const inv = await get('SELECT * FROM investments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!inv) throw notFound('Investimento não encontrado');
 
     const b = req.body;
@@ -362,8 +373,8 @@ router.post(
       throw badRequest(`Quantidade indisponível: a posição atual é de ${inv.quantity}`);
     }
 
-    transaction(() => {
-      run(
+    await transaction(async () => {
+      await run(
         `INSERT INTO investment_movements
            (user_id, investment_id, type, quantity, unit_price, amount, date, account_id, notes)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -371,19 +382,19 @@ router.post(
          b.account_id ?? null, b.notes ?? null],
       );
 
-      recalcPosition(req.user.id, inv.id);
+      await recalcPosition(req.user.id, inv.id);
 
       // Aporte/retirada altera o valor de mercado; provento não.
       if (b.type === 'contribution' || b.type === 'withdrawal') {
         const delta = b.type === 'contribution' ? amount : -amount;
-        run(
-          `UPDATE investments SET current_value = MAX(0, current_value + ?),
-                                  updated_at = datetime('now','localtime')
+        await run(
+          `UPDATE investments SET current_value = GREATEST(0, current_value + ?),
+                                  updated_at = NOW()
             WHERE id = ?`,
           [delta, inv.id],
         );
-        const updated = get('SELECT current_value FROM investments WHERE id = ?', [inv.id]);
-        run(
+        const updated = await get('SELECT current_value FROM investments WHERE id = ?', [inv.id]);
+        await run(
           `INSERT INTO asset_valuations (user_id, investment_id, date, market_value)
            VALUES (?, ?, ?, ?) ON CONFLICT(investment_id, date) DO UPDATE SET market_value = excluded.market_value`,
           [req.user.id, inv.id, date, updated.current_value],
@@ -393,7 +404,7 @@ router.post(
       // Espelha no fluxo de caixa quando o usuário pede.
       if (b.create_transaction && b.account_id) {
         const isIncome = ['dividend', 'interest', 'jcp', 'rent', 'withdrawal'].includes(b.type);
-        run(
+        await run(
           `INSERT INTO transactions
              (user_id, kind, description, amount, status, account_id, competence_date, due_date,
               settle_date, income_type, expense_nature, payment_method, notes)
@@ -408,26 +419,26 @@ router.post(
       }
     });
 
-    const after = get('SELECT * FROM investments WHERE id = ?', [inv.id]);
-    logAudit({ userId: req.user.id, entity: 'investments', entityId: inv.id, action: 'update', summary: `Movimento (${b.type}) em "${inv.name}"` });
-    res.status(201).json({ data: decorate(after) });
+    const after = await get('SELECT * FROM investments WHERE id = ?', [inv.id]);
+    await logAudit({ userId: req.user.id, entity: 'investments', entityId: inv.id, action: 'update', summary: `Movimento (${b.type}) em "${inv.name}"` });
+    res.status(201).json({ data: await decorate(after) });
   }),
 );
 
 router.delete(
   '/:id/movements/:movementId',
   asyncHandler(async (req, res) => {
-    const mov = get('SELECT * FROM investment_movements WHERE id = ? AND investment_id = ? AND user_id = ?', [
+    const mov = await get('SELECT * FROM investment_movements WHERE id = ? AND investment_id = ? AND user_id = ?', [
       req.params.movementId, req.params.id, req.user.id,
     ]);
     if (!mov) throw notFound('Movimento não encontrado');
 
-    transaction(() => {
-      run('DELETE FROM investment_movements WHERE id = ?', [mov.id]);
-      recalcPosition(req.user.id, mov.investment_id);
+    await transaction(async () => {
+      await run('DELETE FROM investment_movements WHERE id = ?', [mov.id]);
+      await recalcPosition(req.user.id, mov.investment_id);
       if (mov.type === 'contribution' || mov.type === 'withdrawal') {
         const delta = mov.type === 'contribution' ? -mov.amount : mov.amount;
-        run('UPDATE investments SET current_value = MAX(0, current_value + ?) WHERE id = ?', [delta, mov.investment_id]);
+        await run('UPDATE investments SET current_value = GREATEST(0, current_value + ?) WHERE id = ?', [delta, mov.investment_id]);
       }
     });
 
@@ -440,29 +451,29 @@ router.post(
   '/:id/valuations',
   validate(z.object({ date: isoDate.optional(), market_value: money })),
   asyncHandler(async (req, res) => {
-    const inv = get('SELECT * FROM investments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const inv = await get('SELECT * FROM investments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!inv) throw notFound('Investimento não encontrado');
 
     const date = req.body.date ?? today();
     const value = toCents(req.body.market_value);
 
-    transaction(() => {
-      run(
+    await transaction(async () => {
+      await run(
         `INSERT INTO asset_valuations (user_id, investment_id, date, market_value)
          VALUES (?, ?, ?, ?) ON CONFLICT(investment_id, date) DO UPDATE SET market_value = excluded.market_value`,
         [req.user.id, inv.id, date, value],
       );
       // Só a avaliação mais recente define o valor atual do ativo.
-      const latest = get(
+      const latest = await get(
         'SELECT date FROM asset_valuations WHERE investment_id = ? ORDER BY date DESC LIMIT 1',
         [inv.id],
       );
       if (latest.date === date) {
-        run("UPDATE investments SET current_value = ?, updated_at = datetime('now','localtime') WHERE id = ?", [value, inv.id]);
+        await run("UPDATE investments SET current_value = ?, updated_at = NOW() WHERE id = ?", [value, inv.id]);
       }
     });
 
-    res.status(201).json({ data: decorate(get('SELECT * FROM investments WHERE id = ?', [inv.id])) });
+    res.status(201).json({ data: await decorate(await get('SELECT * FROM investments WHERE id = ?', [inv.id])) });
   }),
 );
 

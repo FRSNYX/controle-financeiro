@@ -28,13 +28,25 @@ export function createApp() {
   app.set('trust proxy', 1); // rate-limit precisa do IP real atrás de proxy
 
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+
+  // Em produção o site e a API vivem no mesmo domínio, então o próprio host
+  // é sempre aceito — sem isso, seria preciso reconfigurar a lista a cada
+  // novo endereço de deploy (e a Vercel gera um por publicação).
+  const vercelOrigins = process.env.VERCEL_URL
+    ? [`https://${process.env.VERCEL_URL}`, `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`]
+    : [];
+  const allowed = new Set([...env.corsOrigins, ...vercelOrigins].filter(Boolean));
+
   app.use(
     cors({
-      origin: (origin, cb) =>
-        // Sem Origin = chamada de mesma origem ou ferramenta local (curl, Postman).
-        !origin || env.corsOrigins.includes(origin)
-          ? cb(null, true)
-          : cb(new Error(`Origem não permitida: ${origin}`)),
+      origin(origin, cb) {
+        // Sem Origin = mesma origem ou ferramenta local (curl, Postman).
+        if (!origin) return cb(null, true);
+        if (allowed.has(origin)) return cb(null, true);
+        // Qualquer subdomínio de pré-visualização da própria aplicação.
+        if (/^https:\/\/[\w-]+\.vercel\.app$/.test(origin) && process.env.VERCEL) return cb(null, true);
+        return cb(new Error(`Origem não permitida: ${origin}`));
+      },
       credentials: true,
     }),
   );

@@ -13,24 +13,24 @@ import { createTransaction } from '../modules/transactions/service.js';
 const EMAIL = 'demo@financas.local';
 const SENHA = 'demo1234';
 
-migrate({ silent: true });
+await migrate({ silent: true });
 
-const existing = get('SELECT id FROM users WHERE email = ?', [EMAIL]);
+const existing = await get('SELECT id FROM users WHERE email = ?', [EMAIL]);
 if (existing) {
   console.log('Removendo dados demo anteriores...');
-  run('DELETE FROM users WHERE id = ?', [existing.id]); // CASCADE limpa o resto
+  await run('DELETE FROM users WHERE id = ?', [existing.id]); // CASCADE limpa o resto
 }
 
 const { hash, salt } = hashPassword(SENHA);
 const userId = Number(
-  run('INSERT INTO users (name, email, password_hash, password_salt) VALUES (?, ?, ?, ?)', [
+  (await run('INSERT INTO users (name, email, password_hash, password_salt) VALUES (?, ?, ?, ?)', [
     'Usuário Demo', EMAIL, hash, salt,
-  ]).lastInsertRowid,
+  ])).lastInsertRowid,
 );
-seedUserDefaults(userId);
+await seedUserDefaults(userId);
 
-const catId = (name) =>
-  get('SELECT id FROM categories WHERE user_id = ? AND name = ? AND parent_id IS NULL', [userId, name])?.id ?? null;
+const catId = async (name) =>
+  (await get('SELECT id FROM categories WHERE user_id = ? AND name = ? AND parent_id IS NULL', [userId, name]))?.id ?? null;
 
 console.log('Criando contas...');
 const accounts = {};
@@ -41,25 +41,25 @@ for (const a of [
   { name: 'Corretora', type: 'broker', institution: 'XP Investimentos', balance: 500, color: '#10b981' },
 ]) {
   accounts[a.name] = Number(
-    run(
+    (await run(
       `INSERT INTO accounts (user_id, name, type, institution, initial_balance, color)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [userId, a.name, a.type, a.institution, toCents(a.balance), a.color],
-    ).lastInsertRowid,
+    )).lastInsertRowid,
   );
 }
 // A carteira padrão já veio do seedUserDefaults.
-accounts.Carteira = get('SELECT id FROM accounts WHERE user_id = ? AND name = ?', [userId, 'Carteira']).id;
+accounts.Carteira = (await get('SELECT id FROM accounts WHERE user_id = ? AND name = ?', [userId, 'Carteira'])).id;
 
 console.log('Criando cartões...');
 const cardId = Number(
-  run(
+  (await run(
     `INSERT INTO credit_cards (user_id, name, institution, brand, limit_amount, closing_day, due_day, default_account_id, color)
      VALUES (?, 'Nubank Roxinho', 'Nu Pagamentos', 'Mastercard', ?, 20, 28, ?, '#8b5cf6')`,
     [userId, toCents(8000), accounts['Conta Corrente']],
-  ).lastInsertRowid,
+  )).lastInsertRowid,
 );
-run(
+await run(
   `INSERT INTO credit_cards (user_id, name, institution, brand, limit_amount, closing_day, due_day, default_account_id, color)
    VALUES (?, 'Itaú Platinum', 'Itaú', 'Visa', ?, 5, 15, ?, '#f97316')`,
   [userId, toCents(15000), accounts['Conta Corrente']],
@@ -98,12 +98,12 @@ for (let m = MESES - 1; m >= 0; m--) {
   const passado = m > 0;
 
   // Salário
-  createTransaction(userId, {
+  await createTransaction(userId, {
     kind: 'income',
     description: 'Salário mensal',
     amount: 7800,
     status: passado ? 'settled' : 'pending',
-    category_id: catId('Salário'),
+    category_id: await catId('Salário'),
     account_id: accounts['Conta Corrente'],
     competence_date: safeDate(ano, mes, 5),
     due_date: safeDate(ano, mes, 5),
@@ -114,12 +114,12 @@ for (let m = MESES - 1; m >= 0; m--) {
 
   // Renda extra eventual
   if (m % 3 === 0) {
-    createTransaction(userId, {
+    await createTransaction(userId, {
       kind: 'income',
       description: 'Projeto freelance',
       amount: rand(800, 2500),
       status: passado ? 'settled' : 'pending',
-      category_id: catId('Renda extra'),
+      category_id: await catId('Renda extra'),
       account_id: accounts.Nubank,
       competence_date: safeDate(ano, mes, 20),
       due_date: safeDate(ano, mes, 20),
@@ -130,12 +130,12 @@ for (let m = MESES - 1; m >= 0; m--) {
   }
 
   for (const d of DESPESAS_FIXAS) {
-    createTransaction(userId, {
+    await createTransaction(userId, {
       kind: 'expense',
       description: d.desc,
       amount: valorDe(d.valor),
       status: passado ? 'settled' : 'pending',
-      category_id: catId(d.cat),
+      category_id: await catId(d.cat),
       account_id: d.method === 'credito' ? null : accounts['Conta Corrente'],
       card_id: d.method === 'credito' ? cardId : null,
       competence_date: safeDate(ano, mes, d.dia),
@@ -149,12 +149,12 @@ for (let m = MESES - 1; m >= 0; m--) {
   for (const d of DESPESAS_VARIAVEIS) {
     for (let i = 0; i < d.vezes; i++) {
       const dia = Math.min(28, 3 + i * 7 + rand(0, 3));
-      createTransaction(userId, {
+      await createTransaction(userId, {
         kind: 'expense',
         description: d.desc,
         amount: valorDe(d.valor),
         status: passado ? 'settled' : 'pending',
-        category_id: catId(d.cat),
+        category_id: await catId(d.cat),
         account_id: d.method === 'credito' ? null : accounts[rand(0, 1) ? 'Conta Corrente' : 'Nubank'],
         card_id: d.method === 'credito' ? cardId : null,
         competence_date: safeDate(ano, mes, dia),
@@ -168,11 +168,11 @@ for (let m = MESES - 1; m >= 0; m--) {
 }
 
 console.log('Criando compra parcelada...');
-createTransaction(userId, {
+await createTransaction(userId, {
   kind: 'expense',
   description: 'Notebook Dell',
   amount: 5400,
-  category_id: catId('Compras'),
+  category_id: await catId('Compras'),
   card_id: cardId,
   competence_date: addMonths(hoje, -2),
   due_date: addMonths(hoje, -2),
@@ -182,17 +182,17 @@ createTransaction(userId, {
 });
 
 console.log('Criando transferência...');
-run(
+await run(
   `INSERT INTO transfers (user_id, from_account_id, to_account_id, amount, date, description)
    VALUES (?, ?, ?, ?, ?, 'Reserva mensal')`,
   [userId, accounts['Conta Corrente'], accounts['Poupança'], toCents(1000), addMonths(hoje, -1)],
 );
-const transferId = get('SELECT id FROM transfers WHERE user_id = ? ORDER BY id DESC LIMIT 1', [userId]).id;
+const transferId = (await get('SELECT id FROM transfers WHERE user_id = ? ORDER BY id DESC LIMIT 1', [userId])).id;
 for (const [kind, accId, label] of [
   ['transfer_out', accounts['Conta Corrente'], 'Reserva mensal → Poupança'],
   ['transfer_in', accounts['Poupança'], 'Reserva mensal ← Conta Corrente'],
 ]) {
-  run(
+  await run(
     `INSERT INTO transactions (user_id, kind, description, amount, status, neutral, account_id,
                                competence_date, due_date, settle_date, transfer_id)
      VALUES (?, ?, ?, ?, 'settled', 1, ?, ?, ?, ?, ?)`,
@@ -212,23 +212,23 @@ const INVESTIMENTOS = [
   { name: 'Bitcoin', type: 'cripto', inst: 'Binance', qtd: 0.05, aplicado: 8000, atual: 11200, idx: null },
 ];
 
-transaction(() => {
+await transaction(async () => {
   for (const inv of INVESTIMENTOS) {
     const compra = addMonths(hoje, -rand(4, 10));
     const aplicado = toCents(inv.aplicado);
     const atual = toCents(inv.atual);
 
     const invId = Number(
-      run(
+      (await run(
         `INSERT INTO investments (user_id, name, type, institution, quantity, avg_price,
                                   invested_amount, current_value, purchase_date, index_ref)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [userId, inv.name, inv.type, inv.inst, inv.qtd, Math.round(aplicado / inv.qtd),
          aplicado, atual, compra, inv.idx],
-      ).lastInsertRowid,
+      )).lastInsertRowid,
     );
 
-    run(
+    await run(
       `INSERT INTO investment_movements (user_id, investment_id, type, quantity, unit_price, amount, date, notes)
        VALUES (?, ?, 'contribution', ?, ?, ?, ?, 'Aporte inicial')`,
       [userId, invId, inv.qtd, Math.round(aplicado / inv.qtd), aplicado, compra],
@@ -240,7 +240,7 @@ transaction(() => {
       if (data < compra) continue;
       const progresso = (6 - m) / 6;
       const valor = Math.round(aplicado + (atual - aplicado) * progresso * (0.9 + Math.random() * 0.2));
-      run(
+      await run(
         `INSERT INTO asset_valuations (user_id, investment_id, date, market_value) VALUES (?, ?, ?, ?)
          ON CONFLICT(investment_id, date) DO UPDATE SET market_value = excluded.market_value`,
         [userId, invId, data, valor],
@@ -250,7 +250,7 @@ transaction(() => {
     // Proventos para FIIs e ações
     if (inv.type === 'fiis' || inv.type === 'acoes') {
       for (let m = 3; m >= 1; m--) {
-        run(
+        await run(
           `INSERT INTO investment_movements (user_id, investment_id, type, amount, date, notes)
            VALUES (?, ?, ?, ?, ?, 'Provento mensal')`,
           [userId, invId, inv.type === 'fiis' ? 'rent' : 'dividend', toCents(rand(25, 120)), addMonths(hoje, -m)],
@@ -265,13 +265,13 @@ for (const [cat, limite] of [
   ['Alimentação', 1800], ['Transporte', 700], ['Lazer', 400],
   ['Compras', 600], ['Saúde', 700], ['Assinaturas', 150],
 ]) {
-  const id = catId(cat);
+  const id = await catId(cat);
   if (id) {
-    run('INSERT INTO budgets (user_id, month, category_id, limit_amount) VALUES (?, ?, ?, ?)',
+    await run('INSERT INTO budgets (user_id, month, category_id, limit_amount) VALUES (?, ?, ?, ?)',
       [userId, monthKey(hoje), id, toCents(limite)]);
   }
 }
-run('INSERT INTO budgets (user_id, month, category_id, limit_amount) VALUES (?, ?, NULL, ?)',
+await run('INSERT INTO budgets (user_id, month, category_id, limit_amount) VALUES (?, ?, NULL, ?)',
   [userId, monthKey(hoje), toCents(6000)]);
 
 console.log('Criando metas...');
@@ -283,16 +283,16 @@ const METAS = [
 ];
 for (const meta of METAS) {
   const goalId = Number(
-    run(
+    (await run(
       `INSERT INTO goals (user_id, name, type, target_amount, start_date, target_date, color)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [userId, meta.name, meta.type, toCents(meta.alvo), addMonths(hoje, -6), addMonths(hoje, meta.meses), meta.color],
-    ).lastInsertRowid,
+    )).lastInsertRowid,
   );
   // Distribui o acumulado em 6 aportes mensais.
   const porMes = Math.round(toCents(meta.atual) / 6);
   for (let m = 6; m >= 1; m--) {
-    run('INSERT INTO goal_contributions (user_id, goal_id, amount, date, notes) VALUES (?, ?, ?, ?, ?)',
+    await run('INSERT INTO goal_contributions (user_id, goal_id, amount, date, notes) VALUES (?, ?, ?, ?, ?)',
       [userId, goalId, porMes, addMonths(hoje, -m), 'Aporte mensal']);
   }
 }
@@ -303,21 +303,21 @@ for (const a of [
   { name: 'Honda Civic 2021', type: 'veiculo', valor: 98000 },
   { name: 'Equipamentos de informática', type: 'equipamento', valor: 14000 },
 ]) {
-  run('INSERT INTO assets (user_id, name, type, value, acquisition_date) VALUES (?, ?, ?, ?, ?)',
+  await run('INSERT INTO assets (user_id, name, type, value, acquisition_date) VALUES (?, ?, ?, ?, ?)',
     [userId, a.name, a.type, toCents(a.valor), addMonths(hoje, -24)]);
 }
 for (const l of [
   { name: 'Financiamento do apartamento', type: 'financiamento', total: 260000, restante: 214000, parcela: 2180, taxa: 0.79 },
   { name: 'Financiamento do carro', type: 'financiamento', total: 60000, restante: 23500, parcela: 1450, taxa: 1.29 },
 ]) {
-  run(
+  await run(
     `INSERT INTO liabilities (user_id, name, type, total_amount, remaining_amount, monthly_payment, interest_rate, start_date)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [userId, l.name, l.type, toCents(l.total), toCents(l.restante), toCents(l.parcela), l.taxa, addMonths(hoje, -24)],
   );
 }
 
-const { n } = get('SELECT COUNT(*) AS n FROM transactions WHERE user_id = ?', [userId]);
+const { n } = await get('SELECT COUNT(*) AS n FROM transactions WHERE user_id = ?', [userId]);
 console.log(`
 =========================================
   Dados demo criados com sucesso

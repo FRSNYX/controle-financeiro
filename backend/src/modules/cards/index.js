@@ -40,8 +40,8 @@ const schema = z.object({
 });
 
 /** Soma de uma fatura (lançamentos não cancelados). */
-function invoiceTotal(invoiceId) {
-  const { total } = get(
+async function invoiceTotal(invoiceId) {
+  const { total } = await get(
     `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
       WHERE invoice_id = ? AND deleted_at IS NULL AND status <> 'canceled'`,
     [invoiceId],
@@ -50,10 +50,12 @@ function invoiceTotal(invoiceId) {
 }
 
 /** Garante que as faturas do mês atual e do próximo existam, para a UI ter o que mostrar. */
-function ensureCurrentInvoices(userId, card) {
-  const current = getOrCreateInvoice(userId, card, today());
+async function ensureCurrentInvoices(userId, card) {
+  // Em série, não em paralelo: as duas chamadas podem criar faturas, e
+  // executá-las juntas arriscaria duas inserções para o mesmo mês.
+  const current = await getOrCreateInvoice(userId, card, today());
   const nextMonthDate = `${monthKey(today())}-28`;
-  const next = getOrCreateInvoice(userId, card, nextMonthDate);
+  const next = await getOrCreateInvoice(userId, card, nextMonthDate);
   return { current, next };
 }
 
@@ -65,7 +67,7 @@ router.get(
     const where = archived === 'all' ? '' : 'AND c.archived = ?';
     const params = archived === 'all' ? [req.user.id] : [req.user.id, Number(archived)];
 
-    const cards = all(
+    const cards = await all(
       `SELECT c.*, ${USED_LIMIT_SQL}, a.name AS default_account_name
          FROM credit_cards c
          LEFT JOIN accounts a ON a.id = c.default_account_id
@@ -73,19 +75,27 @@ router.get(
       params,
     );
 
-    const data = cards.map((card) => {
-      const { current, next } = ensureCurrentInvoices(req.user.id, card);
-      return {
-        ...card,
-        archived: !!card.archived,
-        available_limit: Math.max(0, card.limit_amount - card.used_limit),
-        limit_usage_pct: card.limit_amount > 0
-          ? Math.round((card.used_limit / card.limit_amount) * 1000) / 10
-          : 0,
-        current_invoice: { ...current, total: invoiceTotal(current.id) },
-        next_invoice: { ...next, total: invoiceTotal(next.id) },
-      };
-    });
+    // Um cartão não depende do outro: resolvem-se em paralelo.
+    const data = await Promise.all(
+      cards.map(async (card) => {
+        const { current, next } = await ensureCurrentInvoices(req.user.id, card);
+        const [currentTotal, nextTotal] = await Promise.all([
+          invoiceTotal(current.id),
+          invoiceTotal(next.id),
+        ]);
+
+        return {
+          ...card,
+          archived: !!card.archived,
+          available_limit: Math.max(0, card.limit_amount - card.used_limit),
+          limit_usage_pct: card.limit_amount > 0
+            ? Math.round((card.used_limit / card.limit_amount) * 1000) / 10
+            : 0,
+          current_invoice: { ...current, total: currentTotal },
+          next_invoice: { ...next, total: nextTotal },
+        };
+      }),
+    );
 
     res.json({ data });
   }),
@@ -94,19 +104,19 @@ router.get(
 router.get(
   '/:id',
   asyncHandler(async (req, res) => {
-    const card = get(`SELECT c.*, ${USED_LIMIT_SQL} FROM credit_cards c WHERE c.id = ? AND c.user_id = ?`, [
+    const card = await get(`SELECT c.*, ${USED_LIMIT_SQL} FROM credit_cards c WHERE c.id = ? AND c.user_id = ?`, [
       req.params.id, req.user.id,
     ]);
     if (!card) throw notFound('Cartão não encontrado');
-    const { current, next } = ensureCurrentInvoices(req.user.id, card);
+    const { current, next } = await ensureCurrentInvoices(req.user.id, card);
 
     res.json({
       data: {
         ...card,
         archived: !!card.archived,
         available_limit: Math.max(0, card.limit_amount - card.used_limit),
-        current_invoice: { ...current, total: invoiceTotal(current.id) },
-        next_invoice: { ...next, total: invoiceTotal(next.id) },
+        current_invoice: { ...current, total: await invoiceTotal(current.id) },
+        next_invoice: { ...next, total: await invoiceTotal(next.id) },
       },
     });
   }),
@@ -117,10 +127,10 @@ router.get(
   '/:id/invoices',
   validateQuery(z.object({ limit: z.coerce.number().int().min(1).max(60).optional().default(24) })),
   asyncHandler(async (req, res) => {
-    const card = get('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const card = await get('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!card) throw notFound('Cartão não encontrado');
 
-    const invoices = all(
+    const invoices = await all(
       `SELECT i.*, COALESCE((
                 SELECT SUM(t.amount) FROM transactions t
                  WHERE t.invoice_id = i.id AND t.deleted_at IS NULL AND t.status <> 'canceled'
@@ -140,17 +150,17 @@ router.get(
 router.get(
   '/invoices/:invoiceId/transactions',
   asyncHandler(async (req, res) => {
-    const invoice = get('SELECT * FROM card_invoices WHERE id = ? AND user_id = ?', [req.params.invoiceId, req.user.id]);
+    const invoice = await get('SELECT * FROM card_invoices WHERE id = ? AND user_id = ?', [req.params.invoiceId, req.user.id]);
     if (!invoice) throw notFound('Fatura não encontrada');
 
-    const rows = all(
+    const rows = await all(
       `${TX_SELECT} WHERE t.invoice_id = ? AND t.deleted_at IS NULL ORDER BY t.competence_date DESC, t.id DESC`,
       [invoice.id],
     );
 
     res.json({
       data: rows.map((r) => serializeTx(r)),
-      invoice: { ...invoice, total: invoiceTotal(invoice.id) },
+      invoice: { ...invoice, total: await invoiceTotal(invoice.id) },
     });
   }),
 );
@@ -168,22 +178,22 @@ router.post(
     category_id: z.coerce.number().int().positive().optional().nullable(),
   })),
   asyncHandler(async (req, res) => {
-    const invoice = get('SELECT * FROM card_invoices WHERE id = ? AND user_id = ?', [req.params.invoiceId, req.user.id]);
+    const invoice = await get('SELECT * FROM card_invoices WHERE id = ? AND user_id = ?', [req.params.invoiceId, req.user.id]);
     if (!invoice) throw notFound('Fatura não encontrada');
     if (invoice.status === 'paid') throw conflict('Esta fatura já está paga');
 
-    const account = get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [req.body.account_id, req.user.id]);
+    const account = await get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [req.body.account_id, req.user.id]);
     if (!account) throw badRequest('Conta não encontrada');
 
-    const card = get('SELECT * FROM credit_cards WHERE id = ?', [invoice.card_id]);
-    const total = invoiceTotal(invoice.id);
+    const card = await get('SELECT * FROM credit_cards WHERE id = ?', [invoice.card_id]);
+    const total = await invoiceTotal(invoice.id);
     const amount = req.body.amount !== undefined ? toCents(req.body.amount) : total;
     if (amount <= 0) throw badRequest('Não há valor a pagar nesta fatura');
 
     const payDate = req.body.date ?? today();
 
-    const result = transaction(() => {
-      const { lastInsertRowid } = run(
+    const result = await transaction(async () => {
+      const { lastInsertRowid } = await run(
         `INSERT INTO transactions
            (user_id, kind, description, amount, status, account_id, category_id,
             competence_date, due_date, settle_date, expense_nature, payment_method, notes)
@@ -196,17 +206,17 @@ router.post(
 
       // Pagamento parcial mantém a fatura aberta e o limite comprometido.
       const fullyPaid = amount >= total;
-      run(
+      await run(
         `UPDATE card_invoices
             SET status = ?, paid_amount = paid_amount + ?, paid_at = ?, payment_tx_id = ?,
-                updated_at = datetime('now','localtime')
+                updated_at = NOW()
           WHERE id = ?`,
         [fullyPaid ? 'paid' : 'closed', amount, fullyPaid ? payDate : null, txId, invoice.id],
       );
 
       // Quitar a fatura liquida as compras que ela contém.
       if (fullyPaid) {
-        run(
+        await run(
           `UPDATE transactions SET status = 'settled', settle_date = ?
             WHERE invoice_id = ? AND deleted_at IS NULL AND status = 'pending'`,
           [payDate, invoice.id],
@@ -216,7 +226,7 @@ router.post(
       return { txId, fullyPaid };
     });
 
-    logAudit({
+    await logAudit({
       userId: req.user.id, entity: 'card_invoices', entityId: invoice.id, action: 'update',
       summary: `Fatura ${card.name} ${invoice.reference_month} paga`,
     });
@@ -236,11 +246,11 @@ router.post(
   asyncHandler(async (req, res) => {
     const b = req.body;
     if (b.default_account_id) {
-      const acc = get('SELECT id FROM accounts WHERE id = ? AND user_id = ?', [b.default_account_id, req.user.id]);
+      const acc = await get('SELECT id FROM accounts WHERE id = ? AND user_id = ?', [b.default_account_id, req.user.id]);
       if (!acc) throw badRequest('Conta de pagamento não encontrada');
     }
 
-    const { lastInsertRowid } = run(
+    const { lastInsertRowid } = await run(
       `INSERT INTO credit_cards
          (user_id, name, institution, brand, limit_amount, closing_day, due_day, default_account_id, color, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -248,9 +258,9 @@ router.post(
        b.closing_day, b.due_day, b.default_account_id ?? null, b.color, b.notes ?? null],
     );
 
-    const created = get('SELECT * FROM credit_cards WHERE id = ?', [Number(lastInsertRowid)]);
-    ensureCurrentInvoices(req.user.id, created);
-    logAudit({ userId: req.user.id, entity: 'credit_cards', entityId: created.id, action: 'create', summary: `Cartão "${created.name}" criado`, after: created });
+    const created = await get('SELECT * FROM credit_cards WHERE id = ?', [Number(lastInsertRowid)]);
+    await ensureCurrentInvoices(req.user.id, created);
+    await logAudit({ userId: req.user.id, entity: 'credit_cards', entityId: created.id, action: 'create', summary: `Cartão "${created.name}" criado`, after: created });
     res.status(201).json({ data: created });
   }),
 );
@@ -259,11 +269,11 @@ router.patch(
   '/:id',
   validate(schema.partial().extend({ archived: z.boolean().optional() })),
   asyncHandler(async (req, res) => {
-    const before = get('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const before = await get('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!before) throw notFound('Cartão não encontrado');
 
     const b = req.body;
-    buildUpdate('credit_cards', before.id, req.user.id, {
+    await buildUpdate('credit_cards', before.id, req.user.id, {
       name: b.name,
       institution: b.institution,
       brand: b.brand,
@@ -276,8 +286,8 @@ router.patch(
       archived: b.archived === undefined ? undefined : b.archived ? 1 : 0,
     });
 
-    const after = get('SELECT * FROM credit_cards WHERE id = ?', [before.id]);
-    logAudit({ userId: req.user.id, entity: 'credit_cards', entityId: before.id, action: 'update', summary: `Cartão "${after.name}" atualizado`, before, after });
+    const after = await get('SELECT * FROM credit_cards WHERE id = ?', [before.id]);
+    await logAudit({ userId: req.user.id, entity: 'credit_cards', entityId: before.id, action: 'update', summary: `Cartão "${after.name}" atualizado`, before, after });
     res.json({ data: after });
   }),
 );
@@ -285,16 +295,16 @@ router.patch(
 router.delete(
   '/:id',
   asyncHandler(async (req, res) => {
-    const card = get('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const card = await get('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!card) throw notFound('Cartão não encontrado');
 
-    const { n } = get('SELECT COUNT(*) AS n FROM transactions WHERE card_id = ? AND deleted_at IS NULL', [card.id]);
+    const { n } = await get('SELECT COUNT(*) AS n FROM transactions WHERE card_id = ? AND deleted_at IS NULL', [card.id]);
     if (n > 0) {
       throw conflict(`Este cartão possui ${n} lançamento(s). Arquive-o para ocultá-lo sem perder o histórico.`);
     }
 
-    run('DELETE FROM credit_cards WHERE id = ?', [card.id]);
-    logAudit({ userId: req.user.id, entity: 'credit_cards', entityId: card.id, action: 'delete', summary: `Cartão "${card.name}" excluído`, before: card });
+    await run('DELETE FROM credit_cards WHERE id = ?', [card.id]);
+    await logAudit({ userId: req.user.id, entity: 'credit_cards', entityId: card.id, action: 'delete', summary: `Cartão "${card.name}" excluído`, before: card });
     res.json({ ok: true });
   }),
 );
@@ -304,7 +314,7 @@ router.get(
   '/:id/preview-invoice',
   validateQuery(z.object({ date: isoDate, installments: z.coerce.number().int().min(1).max(480).optional().default(1) })),
   asyncHandler(async (req, res) => {
-    const card = get('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const card = await get('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!card) throw notFound('Cartão não encontrado');
 
     const { date, installments } = req.validatedQuery;

@@ -32,8 +32,8 @@ const schema = z.object({
  * `monthly_needed` responde à pergunta que importa: "quanto preciso guardar
  * por mês, a partir de hoje, para chegar lá no prazo?".
  */
-function decorate(goal) {
-  const { current } = get(
+async function decorate(goal) {
+  const { current } = await get(
     'SELECT COALESCE(SUM(amount), 0) AS current FROM goal_contributions WHERE goal_id = ?',
     [goal.id],
   );
@@ -63,10 +63,12 @@ router.get(
     const params = [req.user.id];
     if (status !== 'all') { where.push('status = ?'); params.push(status); }
 
-    const data = all(
+    const rows = await all(
       `SELECT * FROM goals WHERE ${where.join(' AND ')} ORDER BY status, target_date`,
       params,
-    ).map(decorate);
+    );
+    // `decorate` consulta o total de aportes de cada meta: resolvem em paralelo.
+    const data = await Promise.all(rows.map(decorate));
 
     res.json({
       data,
@@ -84,14 +86,14 @@ router.get(
 router.get(
   '/:id',
   asyncHandler(async (req, res) => {
-    const goal = get('SELECT * FROM goals WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const goal = await get('SELECT * FROM goals WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!goal) throw notFound('Meta não encontrada');
 
-    const contributions = all(
+    const contributions = await all(
       'SELECT * FROM goal_contributions WHERE goal_id = ? ORDER BY date DESC, id DESC',
       [goal.id],
     );
-    res.json({ data: { ...decorate(goal), contributions } });
+    res.json({ data: { ...(await decorate(goal)), contributions } });
   }),
 );
 
@@ -106,15 +108,15 @@ router.post(
     const start = b.start_date ?? today();
     if (b.target_date < start) throw badRequest('A data prevista deve ser posterior à data de início');
 
-    const { lastInsertRowid } = run(
+    const { lastInsertRowid } = await run(
       `INSERT INTO goals (user_id, name, type, target_amount, start_date, target_date, account_id, color, icon, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [req.user.id, b.name, b.type, target, start, b.target_date, b.account_id ?? null, b.color, b.icon, b.notes ?? null],
     );
 
-    const created = get('SELECT * FROM goals WHERE id = ?', [Number(lastInsertRowid)]);
-    logAudit({ userId: req.user.id, entity: 'goals', entityId: created.id, action: 'create', summary: `Meta "${created.name}" criada`, after: created });
-    res.status(201).json({ data: decorate(created) });
+    const created = await get('SELECT * FROM goals WHERE id = ?', [Number(lastInsertRowid)]);
+    await logAudit({ userId: req.user.id, entity: 'goals', entityId: created.id, action: 'create', summary: `Meta "${created.name}" criada`, after: created });
+    res.status(201).json({ data: await decorate(created) });
   }),
 );
 
@@ -122,11 +124,11 @@ router.patch(
   '/:id',
   validate(schema.partial().extend({ status: z.enum(['active', 'done', 'canceled']).optional() })),
   asyncHandler(async (req, res) => {
-    const before = get('SELECT * FROM goals WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const before = await get('SELECT * FROM goals WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!before) throw notFound('Meta não encontrada');
 
     const b = req.body;
-    buildUpdate('goals', before.id, req.user.id, {
+    await buildUpdate('goals', before.id, req.user.id, {
       name: b.name, type: b.type,
       target_amount: b.target_amount !== undefined ? toCents(b.target_amount) : undefined,
       start_date: b.start_date, target_date: b.target_date,
@@ -134,19 +136,19 @@ router.patch(
       status: b.status, notes: b.notes,
     });
 
-    const after = get('SELECT * FROM goals WHERE id = ?', [before.id]);
-    logAudit({ userId: req.user.id, entity: 'goals', entityId: before.id, action: 'update', summary: `Meta "${after.name}" atualizada`, before, after });
-    res.json({ data: decorate(after) });
+    const after = await get('SELECT * FROM goals WHERE id = ?', [before.id]);
+    await logAudit({ userId: req.user.id, entity: 'goals', entityId: before.id, action: 'update', summary: `Meta "${after.name}" atualizada`, before, after });
+    res.json({ data: await decorate(after) });
   }),
 );
 
 router.delete(
   '/:id',
   asyncHandler(async (req, res) => {
-    const goal = get('SELECT * FROM goals WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const goal = await get('SELECT * FROM goals WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!goal) throw notFound('Meta não encontrada');
-    run('DELETE FROM goals WHERE id = ?', [goal.id]);
-    logAudit({ userId: req.user.id, entity: 'goals', entityId: goal.id, action: 'delete', summary: `Meta "${goal.name}" excluída`, before: goal });
+    await run('DELETE FROM goals WHERE id = ?', [goal.id]);
+    await logAudit({ userId: req.user.id, entity: 'goals', entityId: goal.id, action: 'delete', summary: `Meta "${goal.name}" excluída`, before: goal });
     res.json({ ok: true });
   }),
 );
@@ -162,7 +164,7 @@ router.post(
     account_id: z.coerce.number().int().positive().optional().nullable(),
   })),
   asyncHandler(async (req, res) => {
-    const goal = get('SELECT * FROM goals WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const goal = await get('SELECT * FROM goals WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!goal) throw notFound('Meta não encontrada');
 
     const b = req.body;
@@ -170,14 +172,14 @@ router.post(
     if (amount === 0) throw badRequest('Informe um valor diferente de zero');
     const date = b.date ?? today();
 
-    transaction(() => {
-      run(
+    await transaction(async () => {
+      await run(
         'INSERT INTO goal_contributions (user_id, goal_id, amount, date, notes) VALUES (?, ?, ?, ?, ?)',
         [req.user.id, goal.id, amount, date, b.notes ?? null],
       );
 
       if (b.create_transaction && b.account_id && amount > 0) {
-        run(
+        await run(
           `INSERT INTO transactions
              (user_id, kind, description, amount, status, account_id, competence_date,
               due_date, settle_date, expense_nature, payment_method, goal_id, notes)
@@ -188,29 +190,29 @@ router.post(
       }
 
       // Meta atingida encerra sozinha: não exige ação do usuário.
-      const { current } = get(
+      const { current } = await get(
         'SELECT COALESCE(SUM(amount), 0) AS current FROM goal_contributions WHERE goal_id = ?',
         [goal.id],
       );
       if (current >= goal.target_amount && goal.status === 'active') {
-        run("UPDATE goals SET status = 'done', updated_at = datetime('now','localtime') WHERE id = ?", [goal.id]);
+        await run("UPDATE goals SET status = 'done', updated_at = NOW() WHERE id = ?", [goal.id]);
       }
     });
 
-    const after = get('SELECT * FROM goals WHERE id = ?', [goal.id]);
-    logAudit({ userId: req.user.id, entity: 'goals', entityId: goal.id, action: 'update', summary: `Aporte em "${goal.name}"` });
-    res.status(201).json({ data: decorate(after) });
+    const after = await get('SELECT * FROM goals WHERE id = ?', [goal.id]);
+    await logAudit({ userId: req.user.id, entity: 'goals', entityId: goal.id, action: 'update', summary: `Aporte em "${goal.name}"` });
+    res.status(201).json({ data: await decorate(after) });
   }),
 );
 
 router.delete(
   '/:id/contributions/:contributionId',
   asyncHandler(async (req, res) => {
-    const c = get('SELECT * FROM goal_contributions WHERE id = ? AND goal_id = ? AND user_id = ?', [
+    const c = await get('SELECT * FROM goal_contributions WHERE id = ? AND goal_id = ? AND user_id = ?', [
       req.params.contributionId, req.params.id, req.user.id,
     ]);
     if (!c) throw notFound('Aporte não encontrado');
-    run('DELETE FROM goal_contributions WHERE id = ?', [c.id]);
+    await run('DELETE FROM goal_contributions WHERE id = ?', [c.id]);
     res.json({ ok: true });
   }),
 );

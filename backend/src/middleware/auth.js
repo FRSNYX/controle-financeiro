@@ -13,7 +13,7 @@ export function signAccessToken(user) {
  * Exige um access token válido e carrega o usuário em req.user.
  * Toda query de domínio filtra por req.user.id — é aqui que o isolamento começa.
  */
-export function requireAuth(req, _res, next) {
+export async function requireAuth(req, _res, next) {
   const header = req.headers.authorization ?? '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return next(unauthorized('Token não informado'));
@@ -30,7 +30,7 @@ export function requireAuth(req, _res, next) {
 
   // Recarrega do banco: um usuário excluído não pode continuar operando
   // só porque ainda tem um token válido em mãos.
-  const user = get(
+  const user = await get(
     'SELECT id, name, email, theme, currency, projection_rate FROM users WHERE id = ?',
     [payload.sub],
   );

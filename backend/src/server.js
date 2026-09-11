@@ -6,20 +6,20 @@ import { runAllRecurrences } from './modules/transactions/service.js';
 import { checkDueNotifications } from './modules/history/index.js';
 
 console.log('Iniciando Controle Financeiro...');
-migrate();
+await migrate();
 
 /**
  * Manutenção diária: materializa recorrências e gera avisos de vencimento.
  * Roda no boot e a cada 24h — sem depender de cron externo.
  */
-function dailyMaintenance() {
+async function dailyMaintenance() {
   try {
-    const users = all('SELECT id FROM users');
+    const users = await all('SELECT id FROM users');
     let recurrences = 0;
     let notifications = 0;
     for (const u of users) {
-      recurrences += runAllRecurrences(u.id);
-      notifications += checkDueNotifications(u.id);
+      recurrences += await runAllRecurrences(u.id);
+      notifications += await checkDueNotifications(u.id);
     }
     if (recurrences || notifications) {
       console.log(`  manutenção: ${recurrences} recorrência(s), ${notifications} notificação(ões)`);

@@ -15,8 +15,27 @@ import { logAudit } from '../../utils/audit.js';
 
 const router = Router();
 
-fs.mkdirSync(env.uploadDir, { recursive: true });
-fs.mkdirSync(env.backupDir, { recursive: true });
+// Em serverless o disco é somente-leitura (e efêmero): criar pastas no boot
+// derrubaria a função inteira. Só preparamos o disco onde ele existe de fato.
+if (env.uploadsEnabled) {
+  fs.mkdirSync(env.uploadDir, { recursive: true });
+  fs.mkdirSync(env.backupDir, { recursive: true });
+}
+
+/**
+ * Anexos dependem de disco persistente. Sem ele, a rota recusa o upload em vez
+ * de aceitar um arquivo que desapareceria na próxima requisição.
+ */
+function requireUploads(_req, _res, next) {
+  if (!env.uploadsEnabled) {
+    return next(
+      badRequest(
+        'Anexos não estão disponíveis nesta instalação: o servidor não tem armazenamento permanente de arquivos.',
+      ),
+    );
+  }
+  next();
+}
 
 // ------------------------------------------------------------------
 // Upload de anexos
@@ -27,11 +46,13 @@ const ALLOWED_MIME = new Set([
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ]);
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, env.uploadDir),
-  // Nome gerado no servidor: o nome original do cliente nunca toca o filesystem.
-  filename: (_req, file, cb) => cb(null, `${randomUUID()}${path.extname(file.originalname).slice(0, 10)}`),
-});
+const storage = env.uploadsEnabled
+  ? multer.diskStorage({
+      destination: (_req, _file, cb) => cb(null, env.uploadDir),
+      // Nome gerado no servidor: o nome original do cliente nunca toca o filesystem.
+      filename: (_req, file, cb) => cb(null, `${randomUUID()}${path.extname(file.originalname).slice(0, 10)}`),
+    })
+  : multer.memoryStorage();
 
 const upload = multer({
   storage,
@@ -46,20 +67,23 @@ const upload = multer({
 
 router.post(
   '/attachments/:transactionId',
+  requireUploads,
   upload.array('files', 5),
   asyncHandler(async (req, res) => {
-    const tx = get('SELECT * FROM transactions WHERE id = ? AND user_id = ?', [req.params.transactionId, req.user.id]);
+    const tx = await get('SELECT * FROM transactions WHERE id = ? AND user_id = ?', [req.params.transactionId, req.user.id]);
     if (!tx) throw notFound('Lançamento não encontrado');
     if (!req.files?.length) throw badRequest('Nenhum arquivo enviado');
 
-    const created = req.files.map((file) => {
-      const { lastInsertRowid } = run(
+    // Insere em série: são no máximo 5 arquivos e a ordem do retorno importa.
+    const created = [];
+    for (const file of req.files) {
+      const { lastInsertRowid } = await run(
         `INSERT INTO attachments (user_id, transaction_id, filename, original_name, mime_type, size_bytes)
          VALUES (?, ?, ?, ?, ?, ?)`,
         [req.user.id, tx.id, file.filename, file.originalname, file.mimetype, file.size],
       );
-      return get('SELECT * FROM attachments WHERE id = ?', [Number(lastInsertRowid)]);
-    });
+      created.push(await get('SELECT * FROM attachments WHERE id = ?', [Number(lastInsertRowid)]));
+    }
 
     res.status(201).json({ data: created });
   }),
@@ -68,7 +92,7 @@ router.post(
 router.get(
   '/attachments/:id/download',
   asyncHandler(async (req, res) => {
-    const att = get('SELECT * FROM attachments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const att = await get('SELECT * FROM attachments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!att) throw notFound('Anexo não encontrado');
 
     const filePath = path.join(env.uploadDir, att.filename);
@@ -86,10 +110,10 @@ router.get(
 router.delete(
   '/attachments/:id',
   asyncHandler(async (req, res) => {
-    const att = get('SELECT * FROM attachments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const att = await get('SELECT * FROM attachments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!att) throw notFound('Anexo não encontrado');
 
-    run('DELETE FROM attachments WHERE id = ?', [att.id]);
+    await run('DELETE FROM attachments WHERE id = ?', [att.id]);
     try {
       fs.unlinkSync(path.join(env.uploadDir, att.filename));
     } catch {
@@ -243,7 +267,7 @@ router.post(
     const defaultAccountId = req.body.account_id ? Number(req.body.account_id) : null;
     const defaultKind = req.body.kind ?? null;
 
-    if (defaultAccountId && !get('SELECT id FROM accounts WHERE id = ? AND user_id = ?', [defaultAccountId, req.user.id])) {
+    if (defaultAccountId && !await get('SELECT id FROM accounts WHERE id = ? AND user_id = ?', [defaultAccountId, req.user.id])) {
       throw badRequest('Conta de destino não encontrada');
     }
 
@@ -253,31 +277,34 @@ router.post(
 
     // Índices por nome para resolver categoria/conta sem uma query por linha.
     const categories = new Map(
-      all('SELECT id, name, kind FROM categories WHERE user_id = ?', [req.user.id])
+      (await all('SELECT id, name, kind FROM categories WHERE user_id = ?', [req.user.id]))
         .map((c) => [`${c.kind}:${c.name.toLowerCase()}`, c.id]),
     );
     const accounts = new Map(
-      all('SELECT id, name FROM accounts WHERE user_id = ?', [req.user.id])
+      (await all('SELECT id, name FROM accounts WHERE user_id = ?', [req.user.id]))
         .map((a) => [a.name.toLowerCase(), a.id]),
     );
 
     const errors = [];
     let imported = 0;
 
-    transaction(() => {
-      rows.forEach((row, index) => {
+    await transaction(async () => {
+      // Laço `for` em vez de `forEach`: só ele permite aguardar cada inserção
+      // dentro da transação (um `forEach` async dispararia tudo solto e o
+      // COMMIT aconteceria antes das gravações terminarem).
+      for (const [index, row] of rows.entries()) {
         const lineNo = index + 2; // +1 cabeçalho, +1 base 1
 
         const description = String(row.description ?? '').trim();
-        if (!description) { errors.push({ linha: lineNo, erro: 'Descrição vazia' }); return; }
+        if (!description) { errors.push({ linha: lineNo, erro: 'Descrição vazia' }); continue; }
 
         const rawAmount = String(row.amount ?? '').trim();
-        if (!rawAmount) { errors.push({ linha: lineNo, erro: 'Valor vazio' }); return; }
+        if (!rawAmount) { errors.push({ linha: lineNo, erro: 'Valor vazio' }); continue; }
 
         // Valor negativo no extrato indica despesa.
         const isNegative = rawAmount.startsWith('-');
         const amount = Math.abs(toCents(rawAmount));
-        if (amount <= 0) { errors.push({ linha: lineNo, erro: `Valor inválido: "${rawAmount}"` }); return; }
+        if (amount <= 0) { errors.push({ linha: lineNo, erro: `Valor inválido: "${rawAmount}"` }); continue; }
 
         let kind = defaultKind;
         if (!kind) {
@@ -300,7 +327,7 @@ router.post(
         const statusRaw = String(row.status ?? '').toLowerCase();
         const settled = !!settleDate || statusRaw.includes('pago') || statusRaw.includes('recebido');
 
-        run(
+        await run(
           `INSERT INTO transactions
              (user_id, kind, description, amount, status, category_id, account_id,
               competence_date, due_date, settle_date, expense_nature, notes)
@@ -312,10 +339,10 @@ router.post(
            row.notes ? String(row.notes).slice(0, 2000) : 'Importado de arquivo'],
         );
         imported++;
-      });
+      }
     });
 
-    logAudit({
+    await logAudit({
       userId: req.user.id, entity: 'transactions', action: 'import',
       summary: `${imported} lançamento(s) importado(s) de ${req.file.originalname}`,
     });
@@ -364,7 +391,7 @@ router.get(
     };
 
     for (const table of BACKUP_TABLES) {
-      payload.tables[table] = all(`SELECT * FROM ${table} WHERE user_id = ?`, [req.user.id]);
+      payload.tables[table] = await all(`SELECT * FROM ${table} WHERE user_id = ?`, [req.user.id]);
     }
 
     const filename = `backup-financeiro-${today().replaceAll('-', '')}.json`;
@@ -399,10 +426,10 @@ router.post(
     const userId = req.user.id;
     let restored = 0;
 
-    transaction(() => {
+    await transaction(async () => {
       // Ordem inversa das dependências para não violar chave estrangeira.
       for (const table of [...BACKUP_TABLES].reverse()) {
-        run(`DELETE FROM ${table} WHERE user_id = ?`, [userId]);
+        await run(`DELETE FROM ${table} WHERE user_id = ?`, [userId]);
       }
 
       for (const table of BACKUP_TABLES) {
@@ -410,17 +437,32 @@ router.post(
         for (const row of rows) {
           const data = { ...row, user_id: userId };
           const keys = Object.keys(data);
-          run(
-            `INSERT OR REPLACE INTO ${table} (${keys.join(', ')})
-             VALUES (${keys.map(() => '?').join(', ')})`,
+          // As linhas do usuário acabaram de ser apagadas, então um INSERT
+          // simples basta; o ON CONFLICT protege contra ids repetidos no arquivo.
+          await run(
+            `INSERT INTO ${table} (${keys.join(', ')})
+             VALUES (${keys.map(() => '?').join(', ')})
+             ON CONFLICT (id) DO NOTHING`,
             keys.map((k) => data[k]),
           );
           restored++;
         }
       }
+
+      // Os ids vieram prontos do backup, então as sequências continuam no valor
+      // antigo. Sem reposicioná-las, o próximo cadastro colidiria com um id já
+      // existente.
+      for (const table of BACKUP_TABLES) {
+        await run(
+          `SELECT setval(
+             pg_get_serial_sequence('${table}', 'id'),
+             GREATEST((SELECT COALESCE(MAX(id), 0) FROM ${table}), 1)
+           )`,
+        );
+      }
     });
 
-    logAudit({ userId, entity: 'backup', action: 'import', summary: `Backup restaurado: ${restored} registro(s)` });
+    await logAudit({ userId, entity: 'backup', action: 'import', summary: `Backup restaurado: ${restored} registro(s)` });
     res.json({ ok: true, restored, message: `${restored} registro(s) restaurado(s)` });
   }),
 );

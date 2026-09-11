@@ -19,7 +19,7 @@ function alertLevel(percent) {
 }
 
 /** Gasto realizado do mês para uma categoria (NULL = todas as despesas). */
-function spentInMonth(userId, month, categoryId) {
+async function spentInMonth(userId, month, categoryId) {
   const { start, end } = monthRange(month);
   const where = [
     'user_id = ?', "kind = 'expense'", 'deleted_at IS NULL', 'neutral = 0',
@@ -30,7 +30,7 @@ function spentInMonth(userId, month, categoryId) {
     where.push('(category_id = ? OR subcategory_id = ?)');
     params.push(categoryId, categoryId);
   }
-  return get(
+  return await get(
     `SELECT COALESCE(SUM(amount), 0) AS spent,
             COALESCE(SUM(CASE WHEN status = 'settled' THEN amount END), 0) AS paid
        FROM transactions WHERE ${where.join(' AND ')}`,
@@ -47,7 +47,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const month = req.validatedQuery.month ?? monthKey(today());
 
-    const rows = all(
+    const rows = await all(
       `SELECT b.*, c.name AS category_name, c.color AS category_color, c.icon AS category_icon
          FROM budgets b LEFT JOIN categories c ON c.id = b.category_id
         WHERE b.user_id = ? AND b.month = ?
@@ -59,7 +59,7 @@ router.get(
     let general = null;
 
     for (const b of rows) {
-      const { spent, paid } = spentInMonth(req.user.id, month, b.category_id);
+      const { spent, paid } = await spentInMonth(req.user.id, month, b.category_id);
       const percent = pct(spent, b.limit_amount);
       const item = {
         ...b,
@@ -75,7 +75,7 @@ router.get(
 
     // Orçamento geral: compara com o total gasto no mês, não com a soma dos limites.
     if (!general) {
-      const { spent } = spentInMonth(req.user.id, month, null);
+      const { spent } = await spentInMonth(req.user.id, month, null);
       general = { id: null, month, category_id: null, limit_amount: 0, spent, remaining: -spent, percent_used: 0, alert: alertLevel(0) };
     }
 
@@ -111,24 +111,24 @@ router.put(
     const { month, category_id = null, limit_amount, notes = null } = req.body;
     const limit = toCents(limit_amount);
 
-    run(
+    await run(
       `INSERT INTO budgets (user_id, month, category_id, limit_amount, notes)
        VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(user_id, month, IFNULL(category_id, -1))
+       ON CONFLICT(user_id, month, COALESCE(category_id, -1))
        DO UPDATE SET limit_amount = excluded.limit_amount,
                      notes = excluded.notes,
-                     updated_at = datetime('now','localtime')`,
+                     updated_at = NOW()`,
       [req.user.id, month, category_id, limit, notes],
     );
 
-    const saved = get(
-      'SELECT * FROM budgets WHERE user_id = ? AND month = ? AND IFNULL(category_id, -1) = IFNULL(?, -1)',
+    const saved = await get(
+      'SELECT * FROM budgets WHERE user_id = ? AND month = ? AND COALESCE(category_id, -1) = COALESCE(?, -1)',
       [req.user.id, month, category_id],
     );
-    const { spent } = spentInMonth(req.user.id, month, category_id);
+    const { spent } = await spentInMonth(req.user.id, month, category_id);
     const percent = pct(spent, limit);
 
-    logAudit({ userId: req.user.id, entity: 'budgets', entityId: saved.id, action: 'update', summary: `Orçamento de ${month} definido`, after: saved });
+    await logAudit({ userId: req.user.id, entity: 'budgets', entityId: saved.id, action: 'update', summary: `Orçamento de ${month} definido`, after: saved });
     res.json({ data: { ...saved, spent, remaining: limit - spent, percent_used: percent, alert: alertLevel(percent) } });
   }),
 );
@@ -139,15 +139,15 @@ router.post(
   validate(z.object({ from: monthSchema, to: monthSchema })),
   asyncHandler(async (req, res) => {
     const { from, to } = req.body;
-    const source = all('SELECT * FROM budgets WHERE user_id = ? AND month = ?', [req.user.id, from]);
+    const source = await all('SELECT * FROM budgets WHERE user_id = ? AND month = ?', [req.user.id, from]);
 
     let copied = 0;
     for (const b of source) {
-      run(
+      await run(
         `INSERT INTO budgets (user_id, month, category_id, limit_amount, notes)
          VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(user_id, month, IFNULL(category_id, -1))
-         DO UPDATE SET limit_amount = excluded.limit_amount, updated_at = datetime('now','localtime')`,
+         ON CONFLICT(user_id, month, COALESCE(category_id, -1))
+         DO UPDATE SET limit_amount = excluded.limit_amount, updated_at = NOW()`,
         [req.user.id, to, b.category_id, b.limit_amount, b.notes],
       );
       copied++;
@@ -160,10 +160,10 @@ router.post(
 router.delete(
   '/:id',
   asyncHandler(async (req, res) => {
-    const b = get('SELECT * FROM budgets WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const b = await get('SELECT * FROM budgets WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!b) throw notFound('Orçamento não encontrado');
-    run('DELETE FROM budgets WHERE id = ?', [b.id]);
-    logAudit({ userId: req.user.id, entity: 'budgets', entityId: b.id, action: 'delete', summary: `Orçamento de ${b.month} removido`, before: b });
+    await run('DELETE FROM budgets WHERE id = ?', [b.id]);
+    await logAudit({ userId: req.user.id, entity: 'budgets', entityId: b.id, action: 'delete', summary: `Orçamento de ${b.month} removido`, before: b });
     res.json({ ok: true });
   }),
 );

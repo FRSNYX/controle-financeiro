@@ -9,8 +9,9 @@ Moeda **R$ (BRL)**, datas em **DD/MM/AAAA**, interface em português.
 
 ## Como rodar
 
-Requisitos: **Node.js 22.5 ou superior** (usa o módulo `node:sqlite` nativo — não há
-dependência que precise de compilação).
+Requisitos: **Node.js 20 ou superior**. Não é preciso instalar banco de dados: sem
+`DATABASE_URL` o sistema sobe um PostgreSQL embarcado (PGlite), que é o Postgres
+de verdade rodando dentro do Node.
 
 ### 1. Backend
 
@@ -53,6 +54,47 @@ categorias padrão e uma carteira já são criadas automaticamente.
 
 ---
 
+## Publicar na internet (Vercel + Postgres)
+
+Para acessar de qualquer máquina e do celular. O plano gratuito atende de sobra.
+
+**1. Importar o repositório**
+Em [vercel.com/new](https://vercel.com/new), escolha este repositório e clique em
+**Import**. As configurações de build já vêm no `vercel.json` — não mude nada.
+
+**2. Criar o banco**
+No projeto, aba **Storage** → **Create Database** → **Neon (Postgres)** → plano
+gratuito. A Vercel injeta a `DATABASE_URL` automaticamente.
+
+**3. Definir o segredo de sessão**
+Em **Settings** → **Environment Variables**, crie `JWT_SECRET` com um valor longo
+e aleatório:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+```
+
+**4. Publicar**
+Aba **Deployments** → **Redeploy**. As tabelas são criadas sozinhas na primeira
+requisição.
+
+A partir daí, cada `git push` publica a nova versão automaticamente.
+
+### O que muda na versão publicada
+
+| | Local | Vercel |
+|---|---|---|
+| Banco | PGlite (arquivo) | Neon Postgres |
+| Acesso | só este computador | qualquer lugar, inclusive celular |
+| Anexos | funcionam | desligados — servidor sem disco permanente |
+
+Os anexos são recusados com mensagem explícita em vez de aceitar arquivos que
+sumiriam na requisição seguinte. Para habilitá-los, é preciso um serviço de
+armazenamento de objetos (Vercel Blob, S3) — a troca fica isolada em
+`backend/src/modules/data/index.js`.
+
+---
+
 ## Comandos
 
 ### Backend
@@ -62,7 +104,7 @@ categorias padrão e uma carteira já são criadas automaticamente.
 | `npm start` | Sobe a API em modo produção |
 | `npm run migrate` | Aplica as migrations pendentes |
 | `npm run seed` | Recria os dados de demonstração |
-| `node src/db/smoke.js` | Roda os 61 testes de integração da API |
+| `node src/db/smoke.js` | Roda os 62 testes de integração da API |
 
 ### Frontend
 | Comando | O que faz |
@@ -150,8 +192,8 @@ contas/
 
 | Camada | Tecnologia |
 |---|---|
-| Banco | SQLite via `node:sqlite` |
-| Backend | Node.js 24 + Express 5 + Zod + JWT + scrypt |
+| Banco | PostgreSQL (`pg`); em desenvolvimento, PGlite embarcado |
+| Backend | Node.js 20+ + Express 5 + Zod + JWT + scrypt |
 | Frontend | React 19 + Vite + React Router + TanStack Query |
 | UI | Tailwind CSS v4, componentes próprios, Recharts |
 | Exportação | ExcelJS, PDFKit, CSV nativo |
@@ -163,7 +205,7 @@ Detalhes de modelagem e das regras de negócio em
 
 ## Decisões que valem saber
 
-**Dinheiro em centavos.** Todo valor monetário é `INTEGER` de centavos no banco e
+**Dinheiro em centavos.** Todo valor monetário é inteiro de centavos no banco e
 na API. A conversão para reais acontece só na hora de exibir. Isso elimina a
 classe inteira de erros de arredondamento de ponto flutuante.
 

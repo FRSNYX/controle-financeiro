@@ -1,0 +1,32 @@
+{
+  "name": "controle-financeiro",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Sistema completo de controle financeiro pessoal",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "vercel-build": "npm --prefix frontend ci && npm --prefix frontend run build",
+    "dev": "npm --prefix backend run dev",
+    "dev:web": "npm --prefix frontend run dev",
+    "migrate": "npm --prefix backend run migrate",
+    "seed": "npm --prefix backend run seed",
+    "test": "node backend/src/db/smoke.js"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.2.1",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2",
+    "pdfkit": "^0.17.2",
+    "pg": "^8.23.0",
+    "zod": "^4.1.12"
+  }
+}

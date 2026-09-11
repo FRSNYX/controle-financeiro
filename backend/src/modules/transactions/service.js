@@ -12,25 +12,25 @@ const RECURRENCE_HORIZON_MONTHS = 12;
  * RN-04 — devolve (criando se preciso) a fatura em que uma compra cai.
  * A unicidade é (card_id, reference_month), então repetir a chamada é idempotente.
  */
-export function getOrCreateInvoice(userId, card, purchaseDate) {
+export async function getOrCreateInvoice(userId, card, purchaseDate) {
   const { referenceMonth, closingDate, dueDate } = resolveInvoicePeriod(
     purchaseDate,
     card.closing_day,
     card.due_day,
   );
 
-  const existing = get('SELECT * FROM card_invoices WHERE card_id = ? AND reference_month = ?', [
+  const existing = await get('SELECT * FROM card_invoices WHERE card_id = ? AND reference_month = ?', [
     card.id,
     referenceMonth,
   ]);
   if (existing) return existing;
 
-  const { lastInsertRowid } = run(
+  const { lastInsertRowid } = await run(
     `INSERT INTO card_invoices (user_id, card_id, reference_month, closing_date, due_date, status)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [userId, card.id, referenceMonth, closingDate, dueDate, closingDate <= today() ? 'closed' : 'open'],
   );
-  return get('SELECT * FROM card_invoices WHERE id = ?', [Number(lastInsertRowid)]);
+  return await get('SELECT * FROM card_invoices WHERE id = ?', [Number(lastInsertRowid)]);
 }
 
 /** Campos aceitos na criação/edição, já normalizados para o formato do banco. */
@@ -64,10 +64,10 @@ function normalizeInput(userId, input) {
 }
 
 /** Valida que contas/categorias/cartões informados pertencem ao usuário. */
-function assertOwnership(userId, data) {
-  const check = (table, id, label) => {
+async function assertOwnership(userId, data) {
+  const check = async (table, id, label) => {
     if (!id) return;
-    if (!get(`SELECT id FROM ${table} WHERE id = ? AND user_id = ?`, [id, userId])) {
+    if (!await get(`SELECT id FROM ${table} WHERE id = ? AND user_id = ?`, [id, userId])) {
       throw badRequest(`${label} não encontrado(a)`);
     }
   };
@@ -86,8 +86,8 @@ const INSERT_SQL = `
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
-function insertRow(userId, d) {
-  const { lastInsertRowid } = run(INSERT_SQL, [
+async function insertRow(userId, d) {
+  const { lastInsertRowid } = await run(INSERT_SQL, [
     userId, d.kind, d.description, d.amount, d.status, d.neutral ?? 0,
     d.category_id, d.subcategory_id, d.account_id,
     d.competence_date, d.due_date, d.settle_date,
@@ -111,9 +111,9 @@ function insertRow(userId, d) {
  * Compra no cartão (payment_method 'credito' + card_id) nunca movimenta conta:
  * ela é amarrada a uma fatura e só o pagamento da fatura debita a conta (RN-04).
  */
-export function createTransaction(userId, input) {
+export async function createTransaction(userId, input) {
   const data = normalizeInput(userId, input);
-  assertOwnership(userId, data);
+  await assertOwnership(userId, data);
 
   const isCard = data.kind === 'expense' && data.card_id && data.payment_method === 'credito';
   if (isCard) data.account_id = null;
@@ -121,13 +121,13 @@ export function createTransaction(userId, input) {
   if (data.status !== 'settled') data.settle_date = null;
 
   const card = isCard
-    ? get('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?', [data.card_id, userId])
+    ? await get('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?', [data.card_id, userId])
     : null;
   if (isCard && !card) throw badRequest('Cartão não encontrado');
 
   const installmentTotal = Number(input.installment_total ?? 1);
 
-  return transaction(() => {
+  return await transaction(async () => {
     // ---------- 1. Parcelamento (RN-03) ----------
     if (installmentTotal > 1) {
       if (installmentTotal > 480) throw badRequest('Número de parcelas acima do limite (480)');
@@ -144,13 +144,13 @@ export function createTransaction(userId, input) {
         let effectiveDue = dueDate;
         if (isCard) {
           // Cada parcela cai na fatura do mês seguinte à anterior.
-          const invoice = getOrCreateInvoice(userId, card, addMonths(data.competence_date, i));
+          const invoice = await getOrCreateInvoice(userId, card, addMonths(data.competence_date, i));
           invoiceId = invoice.id;
           effectiveDue = invoice.due_date;
         }
 
         ids.push(
-          insertRow(userId, {
+          await insertRow(userId, {
             ...data,
             amount: parts[i],
             description: data.description,
@@ -167,7 +167,7 @@ export function createTransaction(userId, input) {
         );
       }
 
-      logAudit({
+      await logAudit({
         userId, entity: 'transactions', entityId: ids[0], action: 'create',
         summary: `${data.description} — ${installmentTotal} parcelas`,
       });
@@ -177,16 +177,16 @@ export function createTransaction(userId, input) {
     // ---------- 2. Recorrência (RN-06) ----------
     if (input.recurrence?.frequency) {
       const r = input.recurrence;
-      const { lastInsertRowid } = run(
+      const { lastInsertRowid } = await run(
         `INSERT INTO recurrences (user_id, kind, frequency, interval_n, start_date, end_date, max_count, template)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [userId, data.kind, r.frequency, r.interval_n ?? 1, data.due_date,
          r.end_date ?? null, r.max_count ?? null, JSON.stringify({ ...data, card_id: data.card_id })],
       );
       const recurrenceId = Number(lastInsertRowid);
-      const ids = materializeRecurrence(userId, recurrenceId);
+      const ids = await materializeRecurrence(userId, recurrenceId);
 
-      logAudit({
+      await logAudit({
         userId, entity: 'transactions', entityId: ids[0] ?? null, action: 'create',
         summary: `${data.description} — recorrente (${r.frequency})`,
       });
@@ -196,13 +196,13 @@ export function createTransaction(userId, input) {
     // ---------- 3. Lançamento simples ----------
     let invoiceId = null;
     if (isCard) {
-      const invoice = getOrCreateInvoice(userId, card, data.competence_date);
+      const invoice = await getOrCreateInvoice(userId, card, data.competence_date);
       invoiceId = invoice.id;
       data.due_date = invoice.due_date;
     }
 
-    const id = insertRow(userId, { ...data, invoice_id: invoiceId, installment_total: 1, installment_no: 1 });
-    logAudit({ userId, entity: 'transactions', entityId: id, action: 'create', summary: data.description, after: data });
+    const id = await insertRow(userId, { ...data, invoice_id: invoiceId, installment_total: 1, installment_no: 1 });
+    await logAudit({ userId, entity: 'transactions', entityId: id, action: 'create', summary: data.description, after: data });
     return { ids: [id], count: 1 };
   });
 }
@@ -211,8 +211,8 @@ export function createTransaction(userId, input) {
  * Materializa as ocorrências de uma recorrência até o horizonte.
  * Idempotente: pula datas que já possuem lançamento para a mesma recorrência.
  */
-export function materializeRecurrence(userId, recurrenceId) {
-  const rec = get('SELECT * FROM recurrences WHERE id = ? AND user_id = ?', [recurrenceId, userId]);
+export async function materializeRecurrence(userId, recurrenceId) {
+  const rec = await get('SELECT * FROM recurrences WHERE id = ? AND user_id = ?', [recurrenceId, userId]);
   if (!rec || !rec.active) return [];
 
   const template = JSON.parse(rec.template);
@@ -220,11 +220,11 @@ export function materializeRecurrence(userId, recurrenceId) {
   const limit = rec.end_date && rec.end_date < horizon ? rec.end_date : horizon;
 
   const existing = new Set(
-    all('SELECT due_date FROM transactions WHERE recurrence_id = ?', [recurrenceId]).map((r) => r.due_date),
+    (await all('SELECT due_date FROM transactions WHERE recurrence_id = ?', [recurrenceId])).map((r) => r.due_date),
   );
 
   const card = template.card_id
-    ? get('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?', [template.card_id, userId])
+    ? await get('SELECT * FROM credit_cards WHERE id = ? AND user_id = ?', [template.card_id, userId])
     : null;
 
   const ids = [];
@@ -239,12 +239,12 @@ export function materializeRecurrence(userId, recurrenceId) {
       let invoiceId = null;
       let due = cursor;
       if (card && template.payment_method === 'credito') {
-        const invoice = getOrCreateInvoice(userId, card, cursor);
+        const invoice = await getOrCreateInvoice(userId, card, cursor);
         invoiceId = invoice.id;
         due = invoice.due_date;
       }
       ids.push(
-        insertRow(userId, {
+        await insertRow(userId, {
           ...template,
           competence_date: cursor,
           due_date: due,
@@ -261,20 +261,20 @@ export function materializeRecurrence(userId, recurrenceId) {
     cursor = stepDate(cursor, rec.frequency, rec.interval_n);
   }
 
-  run("UPDATE recurrences SET last_run = datetime('now','localtime') WHERE id = ?", [recurrenceId]);
+  await run("UPDATE recurrences SET last_run = NOW() WHERE id = ?", [recurrenceId]);
   return ids;
 }
 
 /** Roda todas as recorrências ativas — chamado no boot e diariamente. */
-export function runAllRecurrences(userId) {
-  const list = all('SELECT id FROM recurrences WHERE user_id = ? AND active = 1', [userId]);
+export async function runAllRecurrences(userId) {
+  const list = await all('SELECT id FROM recurrences WHERE user_id = ? AND active = 1', [userId]);
   let total = 0;
-  for (const r of list) total += materializeRecurrence(userId, r.id).length;
+  for (const r of list) total += await materializeRecurrence(userId, r.id).length;
   return total;
 }
 
-export function updateTransaction(userId, id, input) {
-  const before = get('SELECT * FROM transactions WHERE id = ? AND user_id = ? AND deleted_at IS NULL', [id, userId]);
+export async function updateTransaction(userId, id, input) {
+  const before = await get('SELECT * FROM transactions WHERE id = ? AND user_id = ? AND deleted_at IS NULL', [id, userId]);
   if (!before) throw notFound('Lançamento não encontrado');
   if (before.neutral) throw badRequest('Edite a transferência pelo módulo de Transferências');
 
@@ -306,20 +306,20 @@ export function updateTransaction(userId, id, input) {
   }
 
   if (fields.amount !== undefined && fields.amount <= 0) throw badRequest('O valor deve ser maior que zero');
-  assertOwnership(userId, { ...before, ...fields });
+  await assertOwnership(userId, { ...before, ...fields });
 
   const entries = Object.entries(fields);
   if (entries.length > 0) {
-    run(
+    await run(
       `UPDATE transactions SET ${entries.map(([k]) => `${k} = ?`).join(', ')},
-              updated_at = datetime('now','localtime')
+              updated_at = NOW()
         WHERE id = ? AND user_id = ?`,
       [...entries.map(([, v]) => v), id, userId],
     );
   }
 
-  const after = get('SELECT * FROM transactions WHERE id = ?', [id]);
-  logAudit({ userId, entity: 'transactions', entityId: id, action: 'update', summary: `Lançamento "${after.description}" editado`, before, after });
+  const after = await get('SELECT * FROM transactions WHERE id = ?', [id]);
+  await logAudit({ userId, entity: 'transactions', entityId: id, action: 'update', summary: `Lançamento "${after.description}" editado`, before, after });
   return after;
 }
 
@@ -329,8 +329,8 @@ export function updateTransaction(userId, id, input) {
  *   future -> este e os seguintes da mesma série (parcelas ou recorrência)
  *   all    -> a série inteira
  */
-export function deleteTransaction(userId, id, scope = 'one') {
-  const tx = get('SELECT * FROM transactions WHERE id = ? AND user_id = ? AND deleted_at IS NULL', [id, userId]);
+export async function deleteTransaction(userId, id, scope = 'one') {
+  const tx = await get('SELECT * FROM transactions WHERE id = ? AND user_id = ? AND deleted_at IS NULL', [id, userId]);
   if (!tx) throw notFound('Lançamento não encontrado');
 
   const seriesKey = tx.installment_group
@@ -339,7 +339,7 @@ export function deleteTransaction(userId, id, scope = 'one') {
       ? { column: 'recurrence_id', value: tx.recurrence_id }
       : null;
 
-  return transaction(() => {
+  return await transaction(async () => {
     let where = 'id = ? AND user_id = ?';
     let params = [id, userId];
 
@@ -351,25 +351,25 @@ export function deleteTransaction(userId, id, scope = 'one') {
         params.push(tx.due_date);
       }
       if (seriesKey.column === 'recurrence_id' && scope === 'all') {
-        run('UPDATE recurrences SET active = 0 WHERE id = ? AND user_id = ?', [seriesKey.value, userId]);
+        await run('UPDATE recurrences SET active = 0 WHERE id = ? AND user_id = ?', [seriesKey.value, userId]);
       }
     }
 
-    const { changes } = run(
-      `UPDATE transactions SET deleted_at = datetime('now','localtime') WHERE ${where}`,
+    const { changes } = await run(
+      `UPDATE transactions SET deleted_at = NOW() WHERE ${where}`,
       params,
     );
-    logAudit({ userId, entity: 'transactions', entityId: id, action: 'delete', summary: `${changes} lançamento(s) excluído(s): "${tx.description}"`, before: tx });
+    await logAudit({ userId, entity: 'transactions', entityId: id, action: 'delete', summary: `${changes} lançamento(s) excluído(s): "${tx.description}"`, before: tx });
     return changes;
   });
 }
 
 /** Duplica um lançamento — atalho para despesas parecidas mês a mês. */
-export function duplicateTransaction(userId, id, overrides = {}) {
-  const src = get('SELECT * FROM transactions WHERE id = ? AND user_id = ?', [id, userId]);
+export async function duplicateTransaction(userId, id, overrides = {}) {
+  const src = await get('SELECT * FROM transactions WHERE id = ? AND user_id = ?', [id, userId]);
   if (!src) throw notFound('Lançamento não encontrado');
 
-  return createTransaction(userId, {
+  return await createTransaction(userId, {
     kind: src.kind,
     description: overrides.description ?? src.description,
     amount: (overrides.amount !== undefined ? toCents(overrides.amount) : src.amount) / 100,
@@ -390,20 +390,20 @@ export function duplicateTransaction(userId, id, overrides = {}) {
 }
 
 /** Marca como pago/recebido (ou desfaz). */
-export function settleTransaction(userId, id, { settled = true, date, accountId } = {}) {
-  const tx = get('SELECT * FROM transactions WHERE id = ? AND user_id = ? AND deleted_at IS NULL', [id, userId]);
+export async function settleTransaction(userId, id, { settled = true, date, accountId } = {}) {
+  const tx = await get('SELECT * FROM transactions WHERE id = ? AND user_id = ? AND deleted_at IS NULL', [id, userId]);
   if (!tx) throw notFound('Lançamento não encontrado');
 
-  run(
+  await run(
     `UPDATE transactions
         SET status = ?, settle_date = ?, account_id = COALESCE(?, account_id),
-            updated_at = datetime('now','localtime')
+            updated_at = NOW()
       WHERE id = ? AND user_id = ?`,
     [settled ? 'settled' : 'pending', settled ? (date ?? today()) : null, accountId ?? null, id, userId],
   );
 
-  const after = get('SELECT * FROM transactions WHERE id = ?', [id]);
-  logAudit({
+  const after = await get('SELECT * FROM transactions WHERE id = ?', [id]);
+  await logAudit({
     userId, entity: 'transactions', entityId: id, action: 'update',
     summary: settled
       ? `"${tx.description}" marcado como ${tx.kind === 'income' ? 'recebido' : 'pago'}`
