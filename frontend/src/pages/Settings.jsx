@@ -11,6 +11,7 @@ import {
 } from '../components/ui';
 import { useAccounts, accountOptions, useApiMutation } from '../hooks/useLookups';
 import { percent } from '../lib/format';
+import { InstalarAppCard } from '../components/InstalarApp';
 
 function ProfileTab() {
   const { user, updateUser } = useAuth();
@@ -126,6 +127,7 @@ function AppearanceTab() {
   const { theme, setTheme } = useTheme();
 
   return (
+    <div className="space-y-4">
     <Card>
       <CardHeader title="Aparência" subtitle="A escolha fica salva neste navegador" icon={Palette} />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl">
@@ -153,6 +155,9 @@ function AppearanceTab() {
         ))}
       </div>
     </Card>
+
+    <InstalarAppCard />
+    </div>
   );
 }
 

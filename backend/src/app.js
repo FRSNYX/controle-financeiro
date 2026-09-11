@@ -105,6 +105,19 @@ export function createApp() {
           } else {
             res.setHeader('Cache-Control', 'no-cache');
           }
+
+          // O celular só reconhece o app como instalável se o manifest vier
+          // com o tipo certo; o Express não conhece essa extensão.
+          if (filePath.endsWith('.webmanifest')) {
+            res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+          }
+
+          // O service worker precisa poder controlar o site inteiro, e um
+          // cache antigo dele impediria qualquer atualização de chegar.
+          if (filePath.endsWith(`${path.sep}sw.js`)) {
+            res.setHeader('Service-Worker-Allowed', '/');
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          }
         },
       }),
     );

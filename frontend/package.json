@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:render": "node render-test.mjs",
-    "check:imports": "node check-imports.mjs && node check-icons.mjs"
+    "check:imports": "node check-imports.mjs && node check-icons.mjs",
+    "test:pwa": "node pwa-test.mjs",
+    "icones": "node scripts/gerar-icones.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
@@ -22,8 +24,10 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
+    "jsdom": "^28.0.0",
+    "sharp": "^0.35.4",
     "tailwindcss": "^4.1.14",
     "vite": "^7.1.9",
-    "jsdom": "^28.0.0"
+    "vite-plugin-pwa": "^1.3.0"
   }
 }
