@@ -109,7 +109,8 @@ armazenamento de objetos (Vercel Blob, S3) — a troca fica isolada em
 | `npm start` | Sobe a API em modo produção |
 | `npm run migrate` | Aplica as migrations pendentes |
 | `npm run seed` | Recria os dados de demonstração |
-| `node src/db/smoke.js` | Roda os 62 testes de integração da API |
+| `node src/db/smoke.js` | Roda os 67 testes de integração da API |
+| `npm run test:isolation` | Tenta invadir uma conta a partir de outra (25 verificações) |
 
 ### Frontend
 | Comando | O que faz |
@@ -254,7 +255,10 @@ identidade de série.
   comparação em tempo constante.
 - **JWT** de acesso com 15 minutos e token de atualização rotativo de 7 dias;
   trocar a senha revoga todas as sessões.
-- **Isolamento por usuário** em toda consulta ao banco.
+- **Isolamento por usuário** em toda consulta ao banco. Várias pessoas podem
+  usar a mesma instalação, cada uma com sua conta, sem enxergar ou alterar os
+  dados das outras — `npm run test:isolation` comprova com 25 tentativas de
+  acesso indevido, incluindo leitura, edição, exclusão e transferência.
 - **Limite de tentativas** no login e na recuperação de senha.
 - **Zod** valida 100% das entradas de escrita; o handler central de erros não
   vaza stack trace em produção.
