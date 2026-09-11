@@ -120,6 +120,8 @@ armazenamento de objetos (Vercel Blob, S3) — a troca fica isolada em
 | `npm run preview` | Serve a versão gerada |
 | `npm run check:imports` | Confere imports e ícones que não resolvem |
 | `npm run test:render` | Renderiza as 15 telas e acusa qualquer uma que quebre |
+| `npm run test:pwa` | Verifica os requisitos de app instalável (16 checagens) |
+| `npm run icones` | Regera os ícones do app a partir do SVG |
 
 ---
 
@@ -169,6 +171,12 @@ testar outros cenários.
 **Histórico** — trilha de auditoria de toda criação, alteração e exclusão, e
 lixeira para restaurar lançamentos excluídos. Nada se perde na virada de mês ou
 de ano.
+
+**Aplicativo no celular** — instalável pela tela inicial, abre em tela cheia com
+ícone próprio, atalhos para lançar receita ou despesa ao segurar o ícone, e
+interface pré-carregada para abrir instantâneo. As respostas da API **não** são
+guardadas em cache: num sistema financeiro, exibir um saldo velho sem avisar é
+pior do que exibir um erro de conexão.
 
 **Outros** — tema claro e escuro, interface responsiva, confirmação antes de
 excluir, duplicação de lançamentos, importação de CSV/Excel, backup e

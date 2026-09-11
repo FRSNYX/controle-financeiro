@@ -8,6 +8,8 @@
  * Uso: node frontend/render-test.mjs [url-da-api]
  */
 import { JSDOM } from 'jsdom';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 
 const BASE = process.argv[2] ?? 'https://controle-financeiro-five-swart.vercel.app';
@@ -81,6 +83,8 @@ dom.window.localStorage.setItem('fin.user', JSON.stringify(reg.user));
 
 // ---------- Vite transforma o JSX para o Node conseguir importar ----------
 const vite = await createServer({
+  // Fixa a raiz na pasta do frontend para o teste funcionar de qualquer lugar.
+  root: path.dirname(fileURLToPath(import.meta.url)),
   server: { middlewareMode: true },
   appType: 'custom',
   logLevel: 'error',

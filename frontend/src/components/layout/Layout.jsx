@@ -10,6 +10,7 @@ import {
 import { useAuth, useTheme, usePeriod } from '../../context/AppProviders';
 import { api } from '../../lib/api';
 import { Button, Dropdown, DropdownItem, DropdownDivider, Badge, cx, Modal, Input } from '../ui';
+import { ConviteInstalacao } from '../InstalarApp';
 import { money, date as fmtDate, monthKey, addMonthKey, todayISO } from '../../lib/format';
 
 const NAV_GROUPS = [
@@ -126,6 +127,8 @@ function Sidebar({ open, onClose, collapsed, onToggleCollapse }) {
             </div>
           ))}
         </nav>
+
+        <ConviteInstalacao recolhido={collapsed} />
 
         <button
           onClick={onToggleCollapse}

@@ -2,9 +2,33 @@
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#4f46e5" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
     <title>Controle Financeiro</title>
+    <meta
+      name="description"
+      content="Receitas, despesas, cartões, investimentos, metas e patrimônio — tudo em um lugar."
+    />
+
+    <!-- A barra do sistema acompanha o tema claro/escuro do aparelho. -->
+    <meta name="theme-color" content="#4f46e5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: dark)" />
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="alternate icon" href="/icones/favicon-32.png" sizes="32x32" />
+
+    <!--
+      O iPhone ignora o manifest e usa estas tags: sem elas, "Adicionar à Tela
+      de Início" criaria só um atalho do navegador, com barra de endereço.
+    -->
+    <link rel="apple-touch-icon" href="/icones/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Finanças" />
+
+    <!-- Dados financeiros não devem aparecer em buscadores. -->
+    <meta name="robots" content="noindex, nofollow" />
   </head>
   <body>
     <div id="root"></div>
