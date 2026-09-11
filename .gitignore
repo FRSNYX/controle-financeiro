@@ -1,0 +1,48 @@
+# ============================================================
+# Dados pessoais — NUNCA devem ir para o repositório
+# ============================================================
+# O banco guarda seus lançamentos, saldos e investimentos reais.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+backend/data/
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Segredos
+.env
+.env.*
+!.env.example
+
+# ============================================================
+# Dependências e build
+# ============================================================
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# ============================================================
+# Logs e temporários
+# ============================================================
+*.log
+npm-debug.log*
+yarn-error.log*
+.cache/
+.temp/
+tmp/
+
+# ============================================================
+# Sistema operacional e editores
+# ============================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.idea/
+.vscode/*
+!.vscode/extensions.json

@@ -1,0 +1,162 @@
+@import 'tailwindcss';
+
+/* Tema escuro por classe (.dark no <html>), não por preferência do sistema:
+   a escolha do usuário fica salva e vale em qualquer máquina. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---------------------------------------------------------------
+   Tokens de cor. Definidos como RGB puro para permitir opacidade
+   via `rgb(var(--x) / 50%)` nas utilidades do Tailwind.
+   --------------------------------------------------------------- */
+:root {
+  --bg: 248 250 252;          /* slate-50  */
+  --surface: 255 255 255;
+  --surface-2: 241 245 249;   /* slate-100 */
+  --border: 226 232 240;      /* slate-200 */
+  --text: 15 23 42;           /* slate-900 */
+  --text-muted: 100 116 139;  /* slate-500 */
+  --brand: 79 70 229;         /* indigo-600 */
+  --brand-soft: 238 242 255;
+  --positive: 22 163 74;      /* green-600 */
+  --negative: 220 38 38;      /* red-600   */
+  --warning: 217 119 6;       /* amber-600 */
+  --info: 2 132 199;          /* sky-600   */
+}
+
+.dark {
+  --bg: 2 6 23;               /* slate-950 */
+  --surface: 15 23 42;        /* slate-900 */
+  --surface-2: 30 41 59;      /* slate-800 */
+  --border: 51 65 85;         /* slate-700 */
+  --text: 241 245 249;        /* slate-100 */
+  --text-muted: 148 163 184;  /* slate-400 */
+  --brand: 129 140 248;       /* indigo-400 */
+  --brand-soft: 30 27 75;
+  --positive: 74 222 128;
+  --negative: 248 113 113;
+  --warning: 251 191 36;
+  --info: 56 189 248;
+}
+
+@theme inline {
+  --color-bg: rgb(var(--bg));
+  --color-surface: rgb(var(--surface));
+  --color-surface-2: rgb(var(--surface-2));
+  --color-line: rgb(var(--border));
+  --color-ink: rgb(var(--text));
+  --color-muted: rgb(var(--text-muted));
+  --color-brand: rgb(var(--brand));
+  --color-brand-soft: rgb(var(--brand-soft));
+  --color-positive: rgb(var(--positive));
+  --color-negative: rgb(var(--negative));
+  --color-warn: rgb(var(--warning));
+  --color-info: rgb(var(--info));
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+@layer base {
+  * {
+    border-color: rgb(var(--border));
+  }
+
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background-color: rgb(var(--bg));
+    color: rgb(var(--text));
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    /* Números financeiros alinham em colunas só com fonte tabular. */
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* O tema troca instantaneamente; só cores fazem a transição. */
+  body,
+  body * {
+    transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+  }
+
+  /* Respeita quem pediu menos movimento no sistema. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--border));
+    border-radius: 9999px;
+    border: 2px solid rgb(var(--bg));
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--text-muted));
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(var(--brand));
+    outline-offset: 2px;
+  }
+
+  /* O ícone nativo de data é quase invisível no escuro. */
+  .dark input[type='date']::-webkit-calendar-picker-indicator,
+  .dark input[type='month']::-webkit-calendar-picker-indicator {
+    filter: invert(0.7);
+  }
+}
+
+@layer utilities {
+  .card {
+    @apply rounded-xl border bg-surface;
+    border-color: rgb(var(--border));
+  }
+
+  .animate-in {
+    animation: fade-up 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @keyframes fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes shimmer {
+    100% {
+      transform: translateX(100%);
+    }
+  }
+
+  .skeleton {
+    @apply relative overflow-hidden bg-surface-2 rounded;
+  }
+  .skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgb(var(--border) / 0.6), transparent);
+    animation: shimmer 1.4s infinite;
+  }
+}
