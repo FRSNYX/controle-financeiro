@@ -117,6 +117,8 @@ armazenamento de objetos (Vercel Blob, S3) — a troca fica isolada em
 | `npm run dev` | Servidor de desenvolvimento |
 | `npm run build` | Gera a versão de produção em `dist/` |
 | `npm run preview` | Serve a versão gerada |
+| `npm run check:imports` | Confere imports e ícones que não resolvem |
+| `npm run test:render` | Renderiza as 15 telas e acusa qualquer uma que quebre |
 
 ---
 
