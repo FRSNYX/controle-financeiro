@@ -250,7 +250,7 @@ function ContributionModal({ goal, onClose, onSaved }) {
 }
 
 function GoalDetail({ goalId, onClose, onContribute }) {
-  const { data, isLoading } = useQuery({
+  const { data } = useQuery({
     queryKey: ['goal', goalId],
     queryFn: () => api.get(`/goals/${goalId}`),
     enabled: !!goalId,
@@ -260,7 +260,10 @@ function GoalDetail({ goalId, onClose, onContribute }) {
 
   return (
     <Modal open={!!goalId} onClose={onClose} title={goal?.name ?? 'Carregando...'} size="md">
-      {isLoading ? (
+      {/* A condição olha para o DADO, não para `isLoading`: numa consulta
+          desativada o TanStack Query devolve isLoading = false, e confiar
+          nele renderizaria o corpo antes de a meta existir. */}
+      {!goal ? (
         <div className="skeleton h-64 rounded-xl" />
       ) : (
         <div className="space-y-5">

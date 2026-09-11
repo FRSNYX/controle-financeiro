@@ -276,7 +276,7 @@ function MovementForm({ investment, onClose, onSaved }) {
 }
 
 function InvestmentDetail({ investmentId, onClose, onMovement }) {
-  const { data, isLoading } = useQuery({
+  const { data } = useQuery({
     queryKey: ['investment', investmentId],
     queryFn: () => api.get(`/investments/${investmentId}`),
     enabled: !!investmentId,
@@ -291,7 +291,10 @@ function InvestmentDetail({ investmentId, onClose, onMovement }) {
 
   return (
     <Modal open={!!investmentId} onClose={onClose} title={inv?.name ?? 'Carregando...'} subtitle={inv?.institution} size="lg">
-      {isLoading ? (
+      {/* A condição olha para o DADO, não para `isLoading`: numa consulta
+          desativada o TanStack Query devolve isLoading = false, e confiar
+          nele renderizaria o corpo antes de o ativo existir. */}
+      {!inv ? (
         <div className="skeleton h-64 rounded-xl" />
       ) : (
         <div className="space-y-5">
