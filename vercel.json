@@ -1,16 +1,14 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "services": {
-    "web": {
-      "root": "frontend/"
-    },
-    "api": {
-      "root": "backend/",
-      "entrypoint": "src/server.js"
+    "app": {
+      "root": "./",
+      "entrypoint": "server.js",
+      "installCommand": "npm install && npm --prefix frontend install",
+      "buildCommand": "npm --prefix frontend run build"
     }
   },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": { "service": "api" } },
-    { "source": "/(.*)", "destination": { "service": "web" } }
+    { "source": "/(.*)", "destination": { "service": "app" } }
   ]
 }

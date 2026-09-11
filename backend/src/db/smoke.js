@@ -612,6 +612,34 @@ await check('usuário não acessa dados de outro usuário', async () => {
   token = tokenOriginal;
 });
 
+// ---------------- Site servido pelo backend ----------------
+// Regressão: em produção o servidor serve a interface, e sem o desvio das
+// rotas internas para o index.html abrir /login direto devolvia 404 — que é
+// exatamente a primeira tela que o sistema abre.
+const { existsSync } = await import('node:fs');
+const { default: pathMod } = await import('node:path');
+const distIndex = pathMod.resolve(process.cwd(), 'frontend', 'dist', 'index.html');
+
+if (existsSync(distIndex)) {
+  for (const rota of ['/login', '/cadastro', '/despesas', '/vida-financeira']) {
+    await check(`rota interna ${rota} devolve a aplicação`, async () => {
+      const res = await fetch(`http://127.0.0.1:${port}${rota}`);
+      const html = await res.text();
+      assert(res.status === 200, `status ${res.status}`);
+      assert(html.includes('<div id="root">'), 'não devolveu o index.html da aplicação');
+    });
+  }
+
+  await check('rota de API inexistente continua 404 (não vira HTML)', async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/api/nao-existe`);
+    assert(res.status === 404, `status ${res.status}`);
+    const body = await res.json();
+    assert(body.error, 'deveria responder JSON de erro, não HTML');
+  });
+} else {
+  console.log('  (pulado: rotas do site — rode `npm --prefix frontend run build` antes)');
+}
+
 // ---------------- Resultado ----------------
 server.close();
 
