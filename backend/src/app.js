@@ -1,6 +1,9 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { env } from './config/env.js';
 import { requireAuth } from './middleware/auth.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
@@ -76,6 +79,45 @@ export function createApp() {
   app.use('/api/networth', requireAuth, networthRoutes);
   app.use('/api/history', requireAuth, historyRoutes);
   app.use('/api/data', requireAuth, dataRoutes);
+
+  // ------------------------------------------------------------------
+  // Site (build do frontend)
+  //
+  // Em produção o mesmo processo serve a interface e a API, no mesmo
+  // endereço — o que elimina CORS e a necessidade de rotear dois serviços.
+  // Em desenvolvimento a pasta não existe e este bloco é ignorado: quem
+  // serve a interface é o Vite, com recarga automática.
+  // ------------------------------------------------------------------
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const siteDir = process.env.SITE_DIR ?? path.resolve(here, '..', '..', 'frontend', 'dist');
+  const indexFile = path.join(siteDir, 'index.html');
+
+  if (fs.existsSync(indexFile)) {
+    // Os arquivos em /assets têm hash no nome, então podem ser cacheados
+    // para sempre; o index.html nunca, senão o navegador serviria a versão
+    // antiga da aplicação depois de uma atualização.
+    app.use(
+      express.static(siteDir, {
+        index: false,
+        setHeaders(res, filePath) {
+          if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          } else {
+            res.setHeader('Cache-Control', 'no-cache');
+          }
+        },
+      }),
+    );
+
+    // O roteamento das telas acontece no navegador: qualquer caminho que não
+    // seja da API nem um arquivo existente devolve o index.html para a
+    // aplicação assumir dali. Sem isto, abrir /login direto — ou recarregar
+    // a página — resultaria em 404.
+    app.get(/^\/(?!api\/).*/, (_req, res) => {
+      res.setHeader('Cache-Control', 'no-cache');
+      res.sendFile(indexFile);
+    });
+  }
 
   app.use(notFoundHandler);
   app.use(errorHandler);
