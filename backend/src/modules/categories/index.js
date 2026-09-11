@@ -33,10 +33,10 @@ router.get(
     if (kind) { where.push('kind = ?'); params.push(kind); }
     if (archived !== 'all') { where.push('archived = ?'); params.push(Number(archived)); }
 
-    const rows = all(
+    const rows = (await all(
       `SELECT * FROM categories WHERE ${where.join(' AND ')} ORDER BY parent_id IS NOT NULL, name`,
       params,
-    ).map((c) => ({ ...c, archived: !!c.archived, is_system: !!c.is_system }));
+    )).map((c) => ({ ...c, archived: !!c.archived, is_system: !!c.is_system }));
 
     if (flat) return res.json({ data: rows });
 
@@ -63,7 +63,7 @@ router.get(
     if (to) { where.push('t.due_date <= ?'); params.push(to); }
 
     res.json({
-      data: all(
+      data: await all(
         `SELECT c.id, c.name, c.kind, c.color, c.icon,
                 COUNT(t.id) AS tx_count, COALESCE(SUM(t.amount), 0) AS total
            FROM categories c
@@ -84,19 +84,19 @@ router.post(
     const b = req.body;
 
     if (b.parent_id) {
-      const parent = get('SELECT * FROM categories WHERE id = ? AND user_id = ?', [b.parent_id, req.user.id]);
+      const parent = await get('SELECT * FROM categories WHERE id = ? AND user_id = ?', [b.parent_id, req.user.id]);
       if (!parent) throw badRequest('Categoria pai não encontrada');
       // Apenas dois níveis: categoria > subcategoria. Mais fundo confunde relatórios.
       if (parent.parent_id) throw badRequest('Não é possível criar subcategoria de uma subcategoria');
       if (parent.kind !== b.kind) throw badRequest('A subcategoria deve ser do mesmo tipo da categoria pai');
     }
 
-    const { lastInsertRowid } = run(
+    const { lastInsertRowid } = await run(
       'INSERT INTO categories (user_id, name, kind, parent_id, color, icon) VALUES (?, ?, ?, ?, ?, ?)',
       [req.user.id, b.name, b.kind, b.parent_id ?? null, b.color, b.icon],
     );
-    const created = get('SELECT * FROM categories WHERE id = ?', [Number(lastInsertRowid)]);
-    logAudit({ userId: req.user.id, entity: 'categories', entityId: created.id, action: 'create', summary: `Categoria "${created.name}" criada`, after: created });
+    const created = await get('SELECT * FROM categories WHERE id = ?', [Number(lastInsertRowid)]);
+    await logAudit({ userId: req.user.id, entity: 'categories', entityId: created.id, action: 'create', summary: `Categoria "${created.name}" criada`, after: created });
     res.status(201).json({ data: created });
   }),
 );
@@ -105,18 +105,18 @@ router.patch(
   '/:id',
   validate(baseSchema.partial().extend({ archived: z.boolean().optional() })),
   asyncHandler(async (req, res) => {
-    const before = get('SELECT * FROM categories WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const before = await get('SELECT * FROM categories WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!before) throw notFound('Categoria não encontrada');
 
     const b = req.body;
     if (b.parent_id !== undefined && b.parent_id !== null) {
       if (Number(b.parent_id) === before.id) throw badRequest('Uma categoria não pode ser pai dela mesma');
-      const parent = get('SELECT * FROM categories WHERE id = ? AND user_id = ?', [b.parent_id, req.user.id]);
+      const parent = await get('SELECT * FROM categories WHERE id = ? AND user_id = ?', [b.parent_id, req.user.id]);
       if (!parent) throw badRequest('Categoria pai não encontrada');
       if (parent.parent_id) throw badRequest('Não é possível aninhar em uma subcategoria');
     }
 
-    buildUpdate('categories', before.id, req.user.id, {
+    await buildUpdate('categories', before.id, req.user.id, {
       name: b.name,
       kind: b.kind,
       parent_id: b.parent_id,
@@ -125,8 +125,8 @@ router.patch(
       archived: b.archived === undefined ? undefined : b.archived ? 1 : 0,
     });
 
-    const after = get('SELECT * FROM categories WHERE id = ?', [before.id]);
-    logAudit({ userId: req.user.id, entity: 'categories', entityId: before.id, action: 'update', summary: `Categoria "${after.name}" atualizada`, before, after });
+    const after = await get('SELECT * FROM categories WHERE id = ?', [before.id]);
+    await logAudit({ userId: req.user.id, entity: 'categories', entityId: before.id, action: 'update', summary: `Categoria "${after.name}" atualizada`, before, after });
     res.json({ data: after });
   }),
 );
@@ -134,10 +134,10 @@ router.patch(
 router.delete(
   '/:id',
   asyncHandler(async (req, res) => {
-    const cat = get('SELECT * FROM categories WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const cat = await get('SELECT * FROM categories WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!cat) throw notFound('Categoria não encontrada');
 
-    const { n } = get(
+    const { n } = await get(
       `SELECT COUNT(*) AS n FROM transactions
         WHERE (category_id = ? OR subcategory_id = ?) AND deleted_at IS NULL`,
       [cat.id, cat.id],
@@ -148,11 +148,11 @@ router.delete(
       );
     }
 
-    const { subs } = get('SELECT COUNT(*) AS subs FROM categories WHERE parent_id = ?', [cat.id]);
+    const { subs } = await get('SELECT COUNT(*) AS subs FROM categories WHERE parent_id = ?', [cat.id]);
     if (subs > 0) throw conflict(`Exclua ou mova as ${subs} subcategoria(s) antes.`);
 
-    run('DELETE FROM categories WHERE id = ?', [cat.id]);
-    logAudit({ userId: req.user.id, entity: 'categories', entityId: cat.id, action: 'delete', summary: `Categoria "${cat.name}" excluída`, before: cat });
+    await run('DELETE FROM categories WHERE id = ?', [cat.id]);
+    await logAudit({ userId: req.user.id, entity: 'categories', entityId: cat.id, action: 'delete', summary: `Categoria "${cat.name}" excluída`, before: cat });
     res.json({ ok: true });
   }),
 );

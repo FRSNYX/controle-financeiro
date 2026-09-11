@@ -52,10 +52,10 @@ router.get(
     const where = archived === 'all' ? '' : 'AND a.archived = ?';
     const params = archived === 'all' ? [req.user.id] : [req.user.id, Number(archived)];
 
-    const accounts = all(
+    const accounts = (await all(
       `SELECT a.*, ${BALANCE_SQL} FROM accounts a WHERE a.user_id = ? ${where} ORDER BY a.archived, a.name`,
       params,
-    ).map((a) => ({ ...a, archived: !!a.archived, include_in_total: !!a.include_in_total }));
+    )).map((a) => ({ ...a, archived: !!a.archived, include_in_total: !!a.include_in_total }));
 
     const total = accounts
       .filter((a) => a.include_in_total && !a.archived)
@@ -68,7 +68,7 @@ router.get(
 router.get(
   '/:id',
   asyncHandler(async (req, res) => {
-    const account = get(`SELECT a.*, ${BALANCE_SQL} FROM accounts a WHERE a.id = ? AND a.user_id = ?`, [
+    const account = await get(`SELECT a.*, ${BALANCE_SQL} FROM accounts a WHERE a.id = ? AND a.user_id = ?`, [
       req.params.id,
       req.user.id,
     ]);
@@ -88,7 +88,7 @@ router.get(
     }),
   ),
   asyncHandler(async (req, res) => {
-    const account = get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const account = await get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!account) throw notFound('Conta não encontrada');
 
     const { from, to, limit } = req.validatedQuery;
@@ -97,7 +97,7 @@ router.get(
     if (from) { where.push('t.due_date >= ?'); params.push(from); }
     if (to) { where.push('t.due_date <= ?'); params.push(to); }
 
-    const rows = all(
+    const rows = await all(
       `${TX_SELECT} WHERE ${where.join(' AND ')} ORDER BY t.due_date ASC, t.id ASC LIMIT ?`,
       [...params, limit],
     );
@@ -105,7 +105,7 @@ router.get(
     // Saldo acumulado começa no saldo anterior ao primeiro item da janela.
     let running = account.initial_balance;
     if (from) {
-      const prior = get(
+      const prior = await get(
         `SELECT COALESCE(SUM(CASE WHEN kind IN ('income','transfer_in') THEN amount ELSE -amount END), 0) AS s
            FROM transactions
           WHERE account_id = ? AND deleted_at IS NULL AND status = 'settled' AND due_date < ?`,
@@ -129,14 +129,14 @@ router.post(
   validate(baseSchema),
   asyncHandler(async (req, res) => {
     const b = req.body;
-    const { lastInsertRowid } = run(
+    const { lastInsertRowid } = await run(
       `INSERT INTO accounts (user_id, name, type, institution, initial_balance, color, icon, include_in_total, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [req.user.id, b.name, b.type, b.institution ?? null, toCents(b.initial_balance),
        b.color, b.icon, b.include_in_total ? 1 : 0, b.notes ?? null],
     );
-    const created = get(`SELECT a.*, ${BALANCE_SQL} FROM accounts a WHERE a.id = ?`, [Number(lastInsertRowid)]);
-    logAudit({ userId: req.user.id, entity: 'accounts', entityId: created.id, action: 'create', summary: `Conta "${created.name}" criada`, after: created });
+    const created = await get(`SELECT a.*, ${BALANCE_SQL} FROM accounts a WHERE a.id = ?`, [Number(lastInsertRowid)]);
+    await logAudit({ userId: req.user.id, entity: 'accounts', entityId: created.id, action: 'create', summary: `Conta "${created.name}" criada`, after: created });
     res.status(201).json({ data: created });
   }),
 );
@@ -145,11 +145,11 @@ router.patch(
   '/:id',
   validate(baseSchema.partial().extend({ archived: z.boolean().optional() })),
   asyncHandler(async (req, res) => {
-    const before = get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const before = await get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!before) throw notFound('Conta não encontrada');
 
     const b = req.body;
-    buildUpdate('accounts', before.id, req.user.id, {
+    await buildUpdate('accounts', before.id, req.user.id, {
       name: b.name,
       type: b.type,
       institution: b.institution,
@@ -161,8 +161,8 @@ router.patch(
       notes: b.notes,
     });
 
-    const after = get(`SELECT a.*, ${BALANCE_SQL} FROM accounts a WHERE a.id = ?`, [before.id]);
-    logAudit({ userId: req.user.id, entity: 'accounts', entityId: before.id, action: 'update', summary: `Conta "${after.name}" atualizada`, before, after });
+    const after = await get(`SELECT a.*, ${BALANCE_SQL} FROM accounts a WHERE a.id = ?`, [before.id]);
+    await logAudit({ userId: req.user.id, entity: 'accounts', entityId: before.id, action: 'update', summary: `Conta "${after.name}" atualizada`, before, after });
     res.json({ data: after });
   }),
 );
@@ -170,10 +170,10 @@ router.patch(
 router.delete(
   '/:id',
   asyncHandler(async (req, res) => {
-    const account = get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+    const account = await get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!account) throw notFound('Conta não encontrada');
 
-    const { n } = get(
+    const { n } = await get(
       'SELECT COUNT(*) AS n FROM transactions WHERE account_id = ? AND deleted_at IS NULL',
       [account.id],
     );
@@ -184,8 +184,8 @@ router.delete(
       );
     }
 
-    run('DELETE FROM accounts WHERE id = ?', [account.id]);
-    logAudit({ userId: req.user.id, entity: 'accounts', entityId: account.id, action: 'delete', summary: `Conta "${account.name}" excluída`, before: account });
+    await run('DELETE FROM accounts WHERE id = ?', [account.id]);
+    await logAudit({ userId: req.user.id, entity: 'accounts', entityId: account.id, action: 'delete', summary: `Conta "${account.name}" excluída`, before: account });
     res.json({ ok: true });
   }),
 );

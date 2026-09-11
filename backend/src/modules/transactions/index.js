@@ -100,11 +100,11 @@ router.get(
     const order = buildOrder(q.sort, q.dir);
     const offset = (q.page - 1) * q.pageSize;
 
-    const rows = all(`${TX_SELECT} WHERE ${where} ${order} LIMIT ? OFFSET ?`, [...params, q.pageSize, offset]);
-    const { total } = get(`SELECT COUNT(*) AS total FROM transactions t WHERE ${where}`, params);
+    const rows = await all(`${TX_SELECT} WHERE ${where} ${order} LIMIT ? OFFSET ?`, [...params, q.pageSize, offset]);
+    const { total } = await get(`SELECT COUNT(*) AS total FROM transactions t WHERE ${where}`, params);
 
     // Totais consideram TODO o filtro, não apenas a página exibida.
-    const totals = get(
+    const totals = await get(
       `SELECT
          COALESCE(SUM(CASE WHEN t.kind = 'income'  THEN t.amount END), 0) AS income_total,
          COALESCE(SUM(CASE WHEN t.kind = 'expense' THEN t.amount END), 0) AS expense_total,
@@ -138,11 +138,11 @@ router.get(
   })),
   asyncHandler(async (req, res) => {
     const { days, limit } = req.validatedQuery;
-    const rows = all(
+    const rows = await all(
       `${TX_SELECT}
         WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.neutral = 0
           AND t.status = 'pending'
-          AND t.due_date <= date(?, '+' || ? || ' days')
+          AND t.due_date <= (?::date + (? || ' days')::interval)
         ORDER BY t.due_date ASC LIMIT ?`,
       [req.user.id, today(), days, limit],
     );
@@ -153,14 +153,14 @@ router.get(
 router.get(
   '/:id',
   asyncHandler(async (req, res) => {
-    const row = get(`${TX_SELECT} WHERE t.id = ? AND t.user_id = ? AND t.deleted_at IS NULL`, [
+    const row = await get(`${TX_SELECT} WHERE t.id = ? AND t.user_id = ? AND t.deleted_at IS NULL`, [
       req.params.id, req.user.id,
     ]);
     if (!row) throw notFound('Lançamento não encontrado');
 
-    const attachments = all('SELECT * FROM attachments WHERE transaction_id = ?', [row.id]);
+    const attachments = await all('SELECT * FROM attachments WHERE transaction_id = ?', [row.id]);
     const siblings = row.installment_group
-      ? all(
+      ? await all(
           `SELECT id, installment_no, due_date, amount, status FROM transactions
             WHERE installment_group = ? AND deleted_at IS NULL ORDER BY installment_no`,
           [row.installment_group],
@@ -175,7 +175,7 @@ router.post(
   '/',
   validate(createSchema),
   asyncHandler(async (req, res) => {
-    const result = createTransaction(req.user.id, req.body);
+    const result = await createTransaction(req.user.id, req.body);
     res.status(201).json({ ...result, message: result.count > 1 ? `${result.count} lançamentos criados` : 'Lançamento criado' });
   }),
 );
@@ -184,7 +184,7 @@ router.patch(
   '/:id',
   validate(createSchema.partial().omit({ kind: true, installment_total: true, recurrence: true })),
   asyncHandler(async (req, res) => {
-    const updated = updateTransaction(req.user.id, Number(req.params.id), req.body);
+    const updated = await updateTransaction(req.user.id, Number(req.params.id), req.body);
     res.json({ data: serializeTx(updated) });
   }),
 );
@@ -193,7 +193,7 @@ router.delete(
   '/:id',
   validateQuery(z.object({ scope: z.enum(['one', 'future', 'all']).optional().default('one') })),
   asyncHandler(async (req, res) => {
-    const deleted = deleteTransaction(req.user.id, Number(req.params.id), req.validatedQuery.scope);
+    const deleted = await deleteTransaction(req.user.id, Number(req.params.id), req.validatedQuery.scope);
     res.json({ ok: true, deleted });
   }),
 );
@@ -207,7 +207,7 @@ router.post(
     competence_date: isoDate.optional(),
   })),
   asyncHandler(async (req, res) => {
-    res.status(201).json(duplicateTransaction(req.user.id, Number(req.params.id), req.body));
+    res.status(201).json(await duplicateTransaction(req.user.id, Number(req.params.id), req.body));
   }),
 );
 
@@ -219,7 +219,7 @@ router.post(
     accountId: z.coerce.number().int().positive().optional(),
   })),
   asyncHandler(async (req, res) => {
-    const updated = settleTransaction(req.user.id, Number(req.params.id), req.body);
+    const updated = await settleTransaction(req.user.id, Number(req.params.id), req.body);
     res.json({ data: serializeTx(updated) });
   }),
 );
@@ -237,7 +237,7 @@ router.post(
     let updated = 0;
     for (const id of ids) {
       try {
-        settleTransaction(req.user.id, id, { settled, date });
+        await settleTransaction(req.user.id, id, { settled, date });
         updated++;
       } catch {
         // Ignora ids inválidos para não abortar o lote inteiro.

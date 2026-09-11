@@ -30,28 +30,29 @@ export const DEFAULT_INCOME_CATEGORIES = [
 ];
 
 /** Cria categorias padrão (com subcategorias) para um usuário recém-criado. */
-export function seedUserDefaults(userId) {
-  const insert = (name, kind, parentId, color, icon, isSystem) =>
-    run(
+export async function seedUserDefaults(userId) {
+  const insert = async (name, kind, parentId, color, icon, isSystem) =>
+    (await run(
       `INSERT INTO categories (user_id, name, kind, parent_id, color, icon, is_system)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [userId, name, kind, parentId, color, icon, isSystem],
-    ).lastInsertRowid;
+    )).lastInsertRowid;
 
   for (const group of [
     { kind: 'expense', list: DEFAULT_EXPENSE_CATEGORIES },
     { kind: 'income', list: DEFAULT_INCOME_CATEGORIES },
   ]) {
     for (const cat of group.list) {
-      const parentId = insert(cat.name, group.kind, null, cat.color, cat.icon, 1);
+      // A categoria-pai precisa existir antes das filhas: inserção em série.
+      const parentId = await insert(cat.name, group.kind, null, cat.color, cat.icon, 1);
       for (const sub of cat.subs) {
-        insert(sub, group.kind, parentId, cat.color, 'tag', 0);
+        await insert(sub, group.kind, parentId, cat.color, 'tag', 0);
       }
     }
   }
 
   // Uma carteira em dinheiro para o usuário conseguir lançar já no primeiro acesso.
-  run(
+  await run(
     `INSERT INTO accounts (user_id, name, type, institution, initial_balance, color, icon)
      VALUES (?, 'Carteira', 'wallet', 'Dinheiro em espécie', 0, '#22c55e', 'wallet')`,
     [userId],

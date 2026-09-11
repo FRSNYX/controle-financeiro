@@ -6,13 +6,14 @@ import { asyncHandler } from '../../utils/errors.js';
 import { pct } from '../../utils/money.js';
 import { today, monthKey, monthRange, monthsBetween, addMonths } from '../../utils/dates.js';
 import { TX_SELECT, serializeTx } from '../../utils/txQuery.js';
+import { buildMonthlySeries } from '../../utils/series.js';
 
 const router = Router();
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 /** Saldo total das contas (RN-01), apenas as marcadas para somar no total. */
-function totalBalance(userId) {
-  return get(
+async function totalBalance(userId) {
+  return (await get(
     `SELECT COALESCE(SUM(
               a.initial_balance + COALESCE((
                 SELECT SUM(CASE WHEN t.kind IN ('income','transfer_in') THEN t.amount ELSE -t.amount END)
@@ -23,12 +24,12 @@ function totalBalance(userId) {
        FROM accounts a
       WHERE a.user_id = ? AND a.archived = 0 AND a.include_in_total = 1`,
     [userId],
-  ).total;
+  )).total;
 }
 
 /** Totais de receita/despesa num intervalo, sempre ignorando transferências. */
-function periodTotals(userId, from, to) {
-  return get(
+async function periodTotals(userId, from, to) {
+  return await get(
     `SELECT
        COALESCE(SUM(CASE WHEN kind = 'income'  THEN amount END), 0) AS income_total,
        COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount END), 0) AS expense_total,
@@ -47,8 +48,8 @@ function periodTotals(userId, from, to) {
   );
 }
 
-function investedTotals(userId) {
-  return get(
+async function investedTotals(userId) {
+  return await get(
     `SELECT COALESCE(SUM(invested_amount), 0) AS invested,
             COALESCE(SUM(current_value), 0)   AS current_value,
             COUNT(*) AS count
@@ -77,15 +78,15 @@ router.get(
       ? monthRange(q.month)
       : { start: q.from ?? monthRange(monthKey(today())).start, end: q.to ?? monthRange(monthKey(today())).end };
 
-    const totals = periodTotals(userId, range.start, range.end);
-    const balance = totalBalance(userId);
-    const investments = investedTotals(userId);
+    const totals = await periodTotals(userId, range.start, range.end);
+    const balance = await totalBalance(userId);
+    const investments = await investedTotals(userId);
 
-    const { physical_assets } = get(
+    const { physical_assets } = await get(
       'SELECT COALESCE(SUM(value), 0) AS physical_assets FROM assets WHERE user_id = ?',
       [userId],
     );
-    const { debts } = get(
+    const { debts } = await get(
       'SELECT COALESCE(SUM(remaining_amount), 0) AS debts FROM liabilities WHERE user_id = ?',
       [userId],
     );
@@ -94,7 +95,7 @@ router.get(
     const result = totals.income_total - totals.expense_total;
 
     // ---- Gastos por categoria (subcategorias somam na categoria-pai) ----
-    const byCategory = all(
+    const byCategory = await all(
       `SELECT COALESCE(parent.id, cat.id, 0)              AS category_id,
               COALESCE(parent.name, cat.name, 'Sem categoria') AS name,
               COALESCE(parent.color, cat.color, '#94a3b8')     AS color,
@@ -106,14 +107,14 @@ router.get(
         WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.neutral = 0
           AND t.kind = 'expense' AND t.status <> 'canceled'
           AND t.due_date >= ? AND t.due_date <= ?
-        GROUP BY category_id
+        GROUP BY 1, 2, 3, 4
         ORDER BY total DESC`,
       [userId, range.start, range.end],
     );
     const categoryTotal = byCategory.reduce((s, c) => s + c.total, 0);
 
     // ---- Receitas por categoria ----
-    const incomeByCategory = all(
+    const incomeByCategory = await all(
       `SELECT COALESCE(c.id, 0) AS category_id,
               COALESCE(c.name, 'Sem categoria') AS name,
               COALESCE(c.color, '#94a3b8') AS color,
@@ -122,7 +123,7 @@ router.get(
         WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.neutral = 0
           AND t.kind = 'income' AND t.status <> 'canceled'
           AND t.due_date >= ? AND t.due_date <= ?
-        GROUP BY category_id ORDER BY total DESC`,
+        GROUP BY 1, 2, 3 ORDER BY total DESC`,
       [userId, range.start, range.end],
     );
 
@@ -130,73 +131,25 @@ router.get(
     const startMonth = addMonths(`${monthKey(range.end)}-01`, -(q.evolutionMonths - 1));
     const months = monthsBetween(startMonth, range.end);
 
-    const monthly = months.map((ym) => {
-      const r = monthRange(ym);
-      const m = get(
-        `SELECT COALESCE(SUM(CASE WHEN kind = 'income'  THEN amount END), 0) AS income,
-                COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount END), 0) AS expense
-           FROM transactions
-          WHERE user_id = ? AND deleted_at IS NULL AND neutral = 0 AND status <> 'canceled'
-            AND due_date >= ? AND due_date <= ?`,
-        [userId, r.start, r.end],
-      );
-
-      // Saldo acumulado até o fim daquele mês (só o que foi efetivamente liquidado).
-      const { accumulated } = get(
-        `SELECT COALESCE(SUM(
-                  CASE WHEN t.kind IN ('income','transfer_in') THEN t.amount ELSE -t.amount END
-                ), 0) AS accumulated
-           FROM transactions t
-           JOIN accounts a ON a.id = t.account_id AND a.include_in_total = 1 AND a.archived = 0
-          WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.status = 'settled' AND t.settle_date <= ?`,
-        [userId, r.end],
-      );
-      const { initial } = get(
-        `SELECT COALESCE(SUM(initial_balance), 0) AS initial FROM accounts
-          WHERE user_id = ? AND archived = 0 AND include_in_total = 1`,
-        [userId],
-      );
-
-      // Patrimônio do mês: saldo + marcação a mercado dos investimentos + bens.
-      const { market } = get(
-        `SELECT COALESCE(SUM(
-                  COALESCE((SELECT v.market_value FROM asset_valuations v
-                             WHERE v.investment_id = i.id AND v.date <= ?
-                             ORDER BY v.date DESC LIMIT 1), i.invested_amount)
-                ), 0) AS market
-           FROM investments i WHERE i.user_id = ? AND i.purchase_date <= ?`,
-        [r.end, userId, r.end],
-      );
-
-      return {
-        month: ym,
-        label: `${ym.slice(5)}/${ym.slice(2, 4)}`,
-        income: m.income,
-        expense: m.expense,
-        result: m.income - m.expense,
-        balance: initial + accumulated,
-        invested: market,
-        net_worth: initial + accumulated + market,
-      };
-    });
+    const monthly = await buildMonthlySeries(userId, months);
 
     // ---- Listas ----
-    const recent = all(
+    const recent = (await all(
       `${TX_SELECT}
         WHERE t.user_id = ? AND t.deleted_at IS NULL
         ORDER BY t.created_at DESC, t.id DESC LIMIT 8`,
       [userId],
-    ).map((r) => serializeTx(r));
+    )).map((r) => serializeTx(r));
 
-    const upcoming = all(
+    const upcoming = (await all(
       `${TX_SELECT}
         WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.neutral = 0
-          AND t.status = 'pending' AND t.due_date <= date(?, '+30 days')
+          AND t.status = 'pending' AND t.due_date <= (?::date + INTERVAL '30 days')
         ORDER BY t.due_date ASC LIMIT 8`,
       [userId, today()],
-    ).map((r) => serializeTx(r));
+    )).map((r) => serializeTx(r));
 
-    const budgetAlerts = all(
+    const budgetAlerts = (await all(
       `SELECT b.*, c.name AS category_name, c.color AS category_color,
               COALESCE((
                 SELECT SUM(t.amount) FROM transactions t
@@ -208,14 +161,14 @@ router.get(
          FROM budgets b LEFT JOIN categories c ON c.id = b.category_id
         WHERE b.user_id = ? AND b.month = ? AND b.category_id IS NOT NULL`,
       [monthRange(monthKey(range.end)).start, monthRange(monthKey(range.end)).end, userId, monthKey(range.end)],
-    )
+    ))
       .map((b) => ({ ...b, percent_used: pct(b.spent, b.limit_amount) }))
       .filter((b) => b.percent_used >= 80)
       .sort((a, b) => b.percent_used - a.percent_used);
 
     // Comparação com o mês anterior dá contexto ao número do mês atual.
     const prevMonth = addMonths(`${monthKey(range.start)}-01`, -1);
-    const prev = periodTotals(userId, monthRange(monthKey(prevMonth)).start, monthRange(monthKey(prevMonth)).end);
+    const prev = await periodTotals(userId, monthRange(monthKey(prevMonth)).start, monthRange(monthKey(prevMonth)).end);
 
     res.json({
       period: { from: range.start, to: range.end, month: monthKey(range.end) },

@@ -6,7 +6,7 @@ import { createApp } from '../app.js';
 import { migrate } from './migrate.js';
 import { monthKey, today, addMonths } from '../utils/dates.js';
 
-migrate({ silent: true });
+await migrate({ silent: true });
 
 const app = createApp();
 const server = app.listen(0);
@@ -535,6 +535,31 @@ await check('modelo de importação é oferecido', async () => {
   const r = await call('GET', '/data/import/template', undefined, { raw: true });
   assert(r.status === 200, `status ${r.status}`);
   assert(r.buffer.toString('utf8').includes('Descrição'), 'modelo sem cabeçalho');
+});
+
+await check('restauração devolve os dados e libera novos cadastros', async () => {
+  const backup = await call('GET', '/data/backup', undefined, { raw: true });
+  const antes = (await call('GET', '/transactions?pageSize=1')).body.pagination.total;
+
+  const form = new FormData();
+  form.append('file', new Blob([backup.buffer], { type: 'application/json' }), 'backup.json');
+  form.append('confirm', 'SUBSTITUIR');
+
+  const res = await fetch(`${BASE}/data/restore`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const body = await res.json();
+  assert(res.status === 200, `status ${res.status}: ${JSON.stringify(body)}`);
+
+  const depois = (await call('GET', '/transactions?pageSize=1')).body.pagination.total;
+  assert(depois === antes, `lançamentos ${depois} != ${antes} após restaurar`);
+
+  // Os ids vêm prontos do backup; sem reposicionar as sequências, este
+  // cadastro colidiria com um id existente.
+  const nova = await call('POST', '/accounts', { name: 'Pós-restore', type: 'cash' });
+  assert(nova.status === 201, `criar conta após restore falhou: ${JSON.stringify(nova.body)}`);
 });
 
 // ---------------- Filtros ----------------

@@ -37,10 +37,10 @@ const loginSchema = z.object({
   password: z.string().min(1, 'Informe a senha'),
 });
 
-function issueRefresh(userId) {
+async function issueRefresh(userId) {
   const token = randomToken(48);
   const expires = new Date(Date.now() + env.refreshTtlDays * 86400_000).toISOString();
-  run('INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES (?, ?, ?)', [
+  await run('INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES (?, ?, ?)', [
     userId,
     token,
     expires,
@@ -67,28 +67,28 @@ router.post(
   asyncHandler(async (req, res) => {
     const { name, email, password } = req.body;
 
-    if (get('SELECT id FROM users WHERE email = ?', [email])) {
+    if (await get('SELECT id FROM users WHERE email = ?', [email])) {
       throw conflict('Já existe uma conta com este e-mail');
     }
 
     const { hash, salt } = hashPassword(password);
 
-    const user = transaction(() => {
-      const { lastInsertRowid: id } = run(
+    const user = await transaction(async () => {
+      const { lastInsertRowid: id } = await run(
         'INSERT INTO users (name, email, password_hash, password_salt) VALUES (?, ?, ?, ?)',
         [name, email, hash, salt],
       );
       // Categorias e carteira padrão: o usuário entra com o sistema já utilizável.
-      seedUserDefaults(Number(id));
-      return get('SELECT * FROM users WHERE id = ?', [Number(id)]);
+      await seedUserDefaults(Number(id));
+      return await get('SELECT * FROM users WHERE id = ?', [Number(id)]);
     });
 
-    logAudit({ userId: user.id, entity: 'users', entityId: user.id, action: 'create', summary: 'Conta criada' });
+    await logAudit({ userId: user.id, entity: 'users', entityId: user.id, action: 'create', summary: 'Conta criada' });
 
     res.status(201).json({
       user: publicUser(user),
       accessToken: signAccessToken(user),
-      refreshToken: issueRefresh(user.id),
+      refreshToken: await issueRefresh(user.id),
     });
   }),
 );
@@ -102,19 +102,19 @@ router.post(
   validate(loginSchema),
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
-    const user = get('SELECT * FROM users WHERE email = ?', [email]);
+    const user = await get('SELECT * FROM users WHERE email = ?', [email]);
 
     // Mesma mensagem para e-mail inexistente e senha errada: não revela cadastros.
     if (!user || !verifyPassword(password, user.password_hash, user.password_salt)) {
       throw unauthorized('E-mail ou senha incorretos');
     }
 
-    logAudit({ userId: user.id, entity: 'users', entityId: user.id, action: 'login', summary: 'Login realizado' });
+    await logAudit({ userId: user.id, entity: 'users', entityId: user.id, action: 'login', summary: 'Login realizado' });
 
     res.json({
       user: publicUser(user),
       accessToken: signAccessToken(user),
-      refreshToken: issueRefresh(user.id),
+      refreshToken: await issueRefresh(user.id),
     });
   }),
 );
@@ -126,20 +126,20 @@ router.post(
   '/refresh',
   validate(z.object({ refreshToken: z.string().min(10) })),
   asyncHandler(async (req, res) => {
-    const stored = get('SELECT * FROM refresh_tokens WHERE token = ?', [req.body.refreshToken]);
+    const stored = await get('SELECT * FROM refresh_tokens WHERE token = ?', [req.body.refreshToken]);
     if (!stored || stored.revoked_at || new Date(stored.expires_at) < new Date()) {
       throw unauthorized('Sessão expirada. Faça login novamente.');
     }
 
-    run("UPDATE refresh_tokens SET revoked_at = datetime('now','localtime') WHERE id = ?", [stored.id]);
+    await run("UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = ?", [stored.id]);
 
-    const user = get('SELECT * FROM users WHERE id = ?', [stored.user_id]);
+    const user = await get('SELECT * FROM users WHERE id = ?', [stored.user_id]);
     if (!user) throw unauthorized('Usuário não encontrado');
 
     res.json({
       user: publicUser(user),
       accessToken: signAccessToken(user),
-      refreshToken: issueRefresh(user.id),
+      refreshToken: await issueRefresh(user.id),
     });
   }),
 );
@@ -149,7 +149,7 @@ router.post(
   validate(z.object({ refreshToken: z.string().optional() })),
   asyncHandler(async (req, res) => {
     if (req.body.refreshToken) {
-      run("UPDATE refresh_tokens SET revoked_at = datetime('now','localtime') WHERE token = ?", [
+      await run("UPDATE refresh_tokens SET revoked_at = NOW() WHERE token = ?", [
         req.body.refreshToken,
       ]);
     }
@@ -165,7 +165,7 @@ router.post(
   authLimiter,
   validate(z.object({ email: z.string().trim().toLowerCase().email() })),
   asyncHandler(async (req, res) => {
-    const user = get('SELECT * FROM users WHERE email = ?', [req.body.email]);
+    const user = await get('SELECT * FROM users WHERE email = ?', [req.body.email]);
 
     // Resposta idêntica exista ou não o e-mail — não confirma cadastros a terceiros.
     const response = {
@@ -192,24 +192,24 @@ router.post(
   authLimiter,
   validate(z.object({ token: z.string().min(10), password: passwordRule })),
   asyncHandler(async (req, res) => {
-    const user = get('SELECT * FROM users WHERE reset_token = ?', [req.body.token]);
+    const user = await get('SELECT * FROM users WHERE reset_token = ?', [req.body.token]);
     if (!user || !user.reset_expires || new Date(user.reset_expires) < new Date()) {
       throw badRequest('Token inválido ou expirado. Solicite uma nova recuperação.');
     }
 
     const { hash, salt } = hashPassword(req.body.password);
-    transaction(() => {
-      run(
+    await transaction(async () => {
+      await run(
         `UPDATE users SET password_hash = ?, password_salt = ?, reset_token = NULL,
-                          reset_expires = NULL, updated_at = datetime('now','localtime')
+                          reset_expires = NULL, updated_at = NOW()
          WHERE id = ?`,
         [hash, salt, user.id],
       );
       // Trocar a senha derruba todas as sessões abertas.
-      run("UPDATE refresh_tokens SET revoked_at = datetime('now','localtime') WHERE user_id = ?", [user.id]);
+      run("UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ?", [user.id]);
     });
 
-    logAudit({ userId: user.id, entity: 'users', entityId: user.id, action: 'update', summary: 'Senha redefinida' });
+    await logAudit({ userId: user.id, entity: 'users', entityId: user.id, action: 'update', summary: 'Senha redefinida' });
     res.json({ ok: true, message: 'Senha alterada com sucesso.' });
   }),
 );
@@ -231,15 +231,15 @@ router.patch(
   ),
   asyncHandler(async (req, res) => {
     const { name, theme, projection_rate } = req.body;
-    run(
+    await run(
       `UPDATE users SET name = COALESCE(?, name),
                         theme = COALESCE(?, theme),
                         projection_rate = COALESCE(?, projection_rate),
-                        updated_at = datetime('now','localtime')
+                        updated_at = NOW()
        WHERE id = ?`,
       [name ?? null, theme ?? null, projection_rate ?? null, req.user.id],
     );
-    res.json({ user: get('SELECT id, name, email, theme, currency, projection_rate FROM users WHERE id = ?', [req.user.id]) });
+    res.json({ user: await get('SELECT id, name, email, theme, currency, projection_rate FROM users WHERE id = ?', [req.user.id]) });
   }),
 );
 
@@ -248,17 +248,17 @@ router.post(
   requireAuth,
   validate(z.object({ currentPassword: z.string().min(1), newPassword: passwordRule })),
   asyncHandler(async (req, res) => {
-    const user = get('SELECT * FROM users WHERE id = ?', [req.user.id]);
+    const user = await get('SELECT * FROM users WHERE id = ?', [req.user.id]);
     if (!verifyPassword(req.body.currentPassword, user.password_hash, user.password_salt)) {
       throw badRequest('Senha atual incorreta');
     }
     const { hash, salt } = hashPassword(req.body.newPassword);
-    run(
-      `UPDATE users SET password_hash = ?, password_salt = ?, updated_at = datetime('now','localtime')
+    await run(
+      `UPDATE users SET password_hash = ?, password_salt = ?, updated_at = NOW()
        WHERE id = ?`,
       [hash, salt, user.id],
     );
-    logAudit({ userId: user.id, entity: 'users', entityId: user.id, action: 'update', summary: 'Senha alterada' });
+    await logAudit({ userId: user.id, entity: 'users', entityId: user.id, action: 'update', summary: 'Senha alterada' });
     res.json({ ok: true });
   }),
 );

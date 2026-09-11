@@ -14,12 +14,12 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
  * transações (receitas/despesas), faturas de cartão, aportes de investimento
  * e transferências entre contas.
  */
-function collectEvents(userId, start, end, { types } = {}) {
-  const wants = (t) => !types || types.includes(t);
+async function collectEvents(userId, start, end, { types } = {}) {
+  const wants = async (t) => !types || types.includes(t);
   const events = [];
 
   if (wants('income') || wants('expense')) {
-    const rows = all(
+    const rows = await all(
       `${TX_SELECT}
         WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.neutral = 0
           AND t.due_date >= ? AND t.due_date <= ?
@@ -52,7 +52,7 @@ function collectEvents(userId, start, end, { types } = {}) {
   }
 
   if (wants('invoice')) {
-    const invoices = all(
+    const invoices = await all(
       `SELECT i.*, c.name AS card_name, c.color AS card_color,
               COALESCE((SELECT SUM(t.amount) FROM transactions t
                          WHERE t.invoice_id = i.id AND t.deleted_at IS NULL AND t.status <> 'canceled'), 0) AS total
@@ -80,7 +80,7 @@ function collectEvents(userId, start, end, { types } = {}) {
   }
 
   if (wants('investment')) {
-    const movements = all(
+    const movements = await all(
       `SELECT m.*, i.name AS investment_name FROM investment_movements m
          JOIN investments i ON i.id = m.investment_id
         WHERE m.user_id = ? AND m.date >= ? AND m.date <= ?`,
@@ -109,7 +109,7 @@ function collectEvents(userId, start, end, { types } = {}) {
   }
 
   if (wants('transfer')) {
-    const transfers = all(
+    const transfers = await all(
       `SELECT t.*, af.name AS from_name, at.name AS to_name FROM transfers t
          JOIN accounts af ON af.id = t.from_account_id
          JOIN accounts at ON at.id = t.to_account_id
@@ -153,7 +153,7 @@ router.get(
       : monthRange(q.month ?? monthKey(today()));
 
     const types = q.types ? q.types.split(',').map((s) => s.trim()).filter(Boolean) : null;
-    const events = collectEvents(req.user.id, range.start, range.end, { types });
+    const events = await collectEvents(req.user.id, range.start, range.end, { types });
 
     // Agrupa por dia com os totais que o calendário precisa exibir na célula.
     const byDay = new Map();
@@ -193,7 +193,7 @@ router.get(
       return res.status(422).json({ error: 'Data inválida. Use o formato AAAA-MM-DD.' });
     }
 
-    const events = collectEvents(req.user.id, date, date);
+    const events = await collectEvents(req.user.id, date, date);
     res.json({
       date,
       data: events,

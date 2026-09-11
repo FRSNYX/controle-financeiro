@@ -12,8 +12,11 @@
     "seed": "node src/db/seed.js",
     "reset": "node src/db/reset.js"
   },
-  "engines": { "node": ">=22.5.0" },
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "exceljs": "^4.4.0",
@@ -23,6 +26,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "pdfkit": "^0.17.2",
+    "pg": "^8.23.0",
     "zod": "^4.1.12"
   }
 }

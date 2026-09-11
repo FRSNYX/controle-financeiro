@@ -6,6 +6,7 @@ import { asyncHandler, notFound } from '../../utils/errors.js';
 import { toCents, pct } from '../../utils/money.js';
 import { today, monthKey, monthRange, monthsBetween, addMonths } from '../../utils/dates.js';
 import { logAudit } from '../../utils/audit.js';
+import { buildMonthlySeries } from '../../utils/series.js';
 
 const router = Router();
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -40,10 +41,10 @@ function project(presentValue, monthlyContribution, monthlyRate, years) {
 }
 
 /** Média de aportes dos últimos N meses — base realista para a projeção. */
-function averageMonthlySavings(userId, months = 6) {
+async function averageMonthlySavings(userId, months = 6) {
   const start = addMonths(`${monthKey(today())}-01`, -(months - 1));
 
-  const { saved } = get(
+  const { saved } = await get(
     `SELECT COALESCE(SUM(CASE WHEN kind = 'income' THEN amount ELSE -amount END), 0) AS saved
        FROM transactions
       WHERE user_id = ? AND deleted_at IS NULL AND neutral = 0 AND status = 'settled'
@@ -51,7 +52,7 @@ function averageMonthlySavings(userId, months = 6) {
     [userId, start, today()],
   );
 
-  const { contributed } = get(
+  const { contributed } = await get(
     `SELECT COALESCE(SUM(amount), 0) AS contributed FROM investment_movements
       WHERE user_id = ? AND type = 'contribution' AND date >= ? AND date <= ?`,
     [userId, start, today()],
@@ -80,7 +81,7 @@ router.get(
     const monthlyRate = q.rate ?? req.user.projection_rate ?? 0.008;
 
     // ---- Ativos ----
-    const accounts = all(
+    const accounts = await all(
       `SELECT a.id, a.name, a.type, a.color,
               a.initial_balance + COALESCE((
                 SELECT SUM(CASE WHEN t.kind IN ('income','transfer_in') THEN t.amount ELSE -t.amount END)
@@ -94,22 +95,22 @@ router.get(
     );
     const cashTotal = accounts.reduce((s, a) => s + a.balance, 0);
 
-    const investments = get(
+    const investments = await get(
       `SELECT COALESCE(SUM(current_value), 0) AS current_value,
               COALESCE(SUM(invested_amount), 0) AS invested
          FROM investments WHERE user_id = ? AND archived = 0`,
       [userId],
     );
 
-    const physicalAssets = all('SELECT * FROM assets WHERE user_id = ? ORDER BY value DESC', [userId]);
+    const physicalAssets = await all('SELECT * FROM assets WHERE user_id = ? ORDER BY value DESC', [userId]);
     const physicalTotal = physicalAssets.reduce((s, a) => s + a.value, 0);
 
     // ---- Passivos ----
-    const liabilities = all('SELECT * FROM liabilities WHERE user_id = ? ORDER BY remaining_amount DESC', [userId]);
+    const liabilities = await all('SELECT * FROM liabilities WHERE user_id = ? ORDER BY remaining_amount DESC', [userId]);
     const liabilitiesTotal = liabilities.reduce((s, l) => s + l.remaining_amount, 0);
 
     // Faturas de cartão em aberto também são dívida — só não estão na tabela.
-    const { open_invoices } = get(
+    const { open_invoices } = await get(
       `SELECT COALESCE(SUM(
                 (SELECT COALESCE(SUM(t.amount), 0) FROM transactions t
                   WHERE t.invoice_id = i.id AND t.deleted_at IS NULL AND t.status <> 'canceled')
@@ -124,51 +125,12 @@ router.get(
     const netWorth = totalAssets - totalDebts;
 
     // ---- Projeções ----
-    const savings = averageMonthlySavings(userId, q.savingsWindow);
+    const savings = await averageMonthlySavings(userId, q.savingsWindow);
     const projections = [1, 5, 10].map((y) => project(netWorth, savings.average_monthly, monthlyRate, y));
 
     // ---- Evolução histórica do patrimônio ----
     const startMonth = addMonths(`${monthKey(today())}-01`, -(q.months - 1));
-    const evolution = monthsBetween(startMonth, today()).map((ym) => {
-      const { end } = monthRange(ym);
-
-      const { accumulated } = get(
-        `SELECT COALESCE(SUM(CASE WHEN t.kind IN ('income','transfer_in') THEN t.amount ELSE -t.amount END), 0) AS accumulated
-           FROM transactions t
-           JOIN accounts a ON a.id = t.account_id AND a.archived = 0 AND a.include_in_total = 1
-          WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.status = 'settled' AND t.settle_date <= ?`,
-        [userId, end],
-      );
-      const { initial } = get(
-        'SELECT COALESCE(SUM(initial_balance), 0) AS initial FROM accounts WHERE user_id = ? AND archived = 0 AND include_in_total = 1',
-        [userId],
-      );
-      const { market } = get(
-        `SELECT COALESCE(SUM(
-                  COALESCE((SELECT v.market_value FROM asset_valuations v
-                             WHERE v.investment_id = i.id AND v.date <= ?
-                             ORDER BY v.date DESC LIMIT 1), i.invested_amount)
-                ), 0) AS market
-           FROM investments i WHERE i.user_id = ? AND i.purchase_date <= ?`,
-        [end, userId, end],
-      );
-      const { physical } = get(
-        `SELECT COALESCE(SUM(value), 0) AS physical FROM assets
-          WHERE user_id = ? AND (acquisition_date IS NULL OR acquisition_date <= ?)`,
-        [userId, end],
-      );
-
-      const cash = initial + accumulated;
-      return {
-        month: ym,
-        label: `${ym.slice(5)}/${ym.slice(2, 4)}`,
-        cash,
-        investments: market,
-        physical_assets: physical,
-        total_assets: cash + market + physical,
-        net_worth: cash + market + physical,
-      };
-    });
+    const evolution = await buildMonthlySeries(userId, monthsBetween(startMonth, today()));
 
     const first = evolution[0]?.net_worth ?? 0;
     const last = evolution.at(-1)?.net_worth ?? 0;
@@ -226,39 +188,39 @@ const assetSchema = z.object({
 });
 
 router.get('/assets', asyncHandler(async (req, res) => {
-  res.json({ data: all('SELECT * FROM assets WHERE user_id = ? ORDER BY value DESC', [req.user.id]) });
+  res.json({ data: await all('SELECT * FROM assets WHERE user_id = ? ORDER BY value DESC', [req.user.id]) });
 }));
 
 router.post('/assets', validate(assetSchema), asyncHandler(async (req, res) => {
   const b = req.body;
-  const { lastInsertRowid } = run(
+  const { lastInsertRowid } = await run(
     'INSERT INTO assets (user_id, name, type, value, acquisition_date, notes) VALUES (?, ?, ?, ?, ?, ?)',
     [req.user.id, b.name, b.type, toCents(b.value), b.acquisition_date ?? null, b.notes ?? null],
   );
-  const created = get('SELECT * FROM assets WHERE id = ?', [Number(lastInsertRowid)]);
-  logAudit({ userId: req.user.id, entity: 'assets', entityId: created.id, action: 'create', summary: `Bem "${created.name}" cadastrado`, after: created });
+  const created = await get('SELECT * FROM assets WHERE id = ?', [Number(lastInsertRowid)]);
+  await logAudit({ userId: req.user.id, entity: 'assets', entityId: created.id, action: 'create', summary: `Bem "${created.name}" cadastrado`, after: created });
   res.status(201).json({ data: created });
 }));
 
 router.patch('/assets/:id', validate(assetSchema.partial()), asyncHandler(async (req, res) => {
-  const before = get('SELECT * FROM assets WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+  const before = await get('SELECT * FROM assets WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
   if (!before) throw notFound('Bem não encontrado');
   const b = req.body;
-  buildUpdate('assets', before.id, req.user.id, {
+  await buildUpdate('assets', before.id, req.user.id, {
     name: b.name, type: b.type,
     value: b.value !== undefined ? toCents(b.value) : undefined,
     acquisition_date: b.acquisition_date, notes: b.notes,
   });
-  const after = get('SELECT * FROM assets WHERE id = ?', [before.id]);
-  logAudit({ userId: req.user.id, entity: 'assets', entityId: before.id, action: 'update', summary: `Bem "${after.name}" atualizado`, before, after });
+  const after = await get('SELECT * FROM assets WHERE id = ?', [before.id]);
+  await logAudit({ userId: req.user.id, entity: 'assets', entityId: before.id, action: 'update', summary: `Bem "${after.name}" atualizado`, before, after });
   res.json({ data: after });
 }));
 
 router.delete('/assets/:id', asyncHandler(async (req, res) => {
-  const a = get('SELECT * FROM assets WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+  const a = await get('SELECT * FROM assets WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
   if (!a) throw notFound('Bem não encontrado');
-  run('DELETE FROM assets WHERE id = ?', [a.id]);
-  logAudit({ userId: req.user.id, entity: 'assets', entityId: a.id, action: 'delete', summary: `Bem "${a.name}" excluído`, before: a });
+  await run('DELETE FROM assets WHERE id = ?', [a.id]);
+  await logAudit({ userId: req.user.id, entity: 'assets', entityId: a.id, action: 'delete', summary: `Bem "${a.name}" excluído`, before: a });
   res.json({ ok: true });
 }));
 
@@ -278,7 +240,7 @@ const liabilitySchema = z.object({
 });
 
 router.get('/liabilities', asyncHandler(async (req, res) => {
-  const data = all('SELECT * FROM liabilities WHERE user_id = ? ORDER BY remaining_amount DESC', [req.user.id]).map((l) => ({
+  const data = async (await all('SELECT * FROM liabilities WHERE user_id = ? ORDER BY remaining_amount DESC', [req.user.id])).map((l) => ({
     ...l,
     paid_amount: Math.max(0, l.total_amount - l.remaining_amount),
     paid_pct: pct(l.total_amount - l.remaining_amount, l.total_amount),
@@ -290,39 +252,39 @@ router.post('/liabilities', validate(liabilitySchema), asyncHandler(async (req, 
   const b = req.body;
   const remaining = toCents(b.remaining_amount);
   const total = toCents(b.total_amount) || remaining;
-  const { lastInsertRowid } = run(
+  const { lastInsertRowid } = await run(
     `INSERT INTO liabilities (user_id, name, type, total_amount, remaining_amount, monthly_payment,
                               interest_rate, start_date, end_date, notes)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [req.user.id, b.name, b.type, total, remaining, toCents(b.monthly_payment),
      b.interest_rate, b.start_date ?? null, b.end_date ?? null, b.notes ?? null],
   );
-  const created = get('SELECT * FROM liabilities WHERE id = ?', [Number(lastInsertRowid)]);
-  logAudit({ userId: req.user.id, entity: 'liabilities', entityId: created.id, action: 'create', summary: `Dívida "${created.name}" cadastrada`, after: created });
+  const created = await get('SELECT * FROM liabilities WHERE id = ?', [Number(lastInsertRowid)]);
+  await logAudit({ userId: req.user.id, entity: 'liabilities', entityId: created.id, action: 'create', summary: `Dívida "${created.name}" cadastrada`, after: created });
   res.status(201).json({ data: created });
 }));
 
 router.patch('/liabilities/:id', validate(liabilitySchema.partial()), asyncHandler(async (req, res) => {
-  const before = get('SELECT * FROM liabilities WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+  const before = await get('SELECT * FROM liabilities WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
   if (!before) throw notFound('Dívida não encontrada');
   const b = req.body;
-  buildUpdate('liabilities', before.id, req.user.id, {
+  await buildUpdate('liabilities', before.id, req.user.id, {
     name: b.name, type: b.type,
     total_amount: b.total_amount !== undefined ? toCents(b.total_amount) : undefined,
     remaining_amount: b.remaining_amount !== undefined ? toCents(b.remaining_amount) : undefined,
     monthly_payment: b.monthly_payment !== undefined ? toCents(b.monthly_payment) : undefined,
     interest_rate: b.interest_rate, start_date: b.start_date, end_date: b.end_date, notes: b.notes,
   });
-  const after = get('SELECT * FROM liabilities WHERE id = ?', [before.id]);
-  logAudit({ userId: req.user.id, entity: 'liabilities', entityId: before.id, action: 'update', summary: `Dívida "${after.name}" atualizada`, before, after });
+  const after = await get('SELECT * FROM liabilities WHERE id = ?', [before.id]);
+  await logAudit({ userId: req.user.id, entity: 'liabilities', entityId: before.id, action: 'update', summary: `Dívida "${after.name}" atualizada`, before, after });
   res.json({ data: after });
 }));
 
 router.delete('/liabilities/:id', asyncHandler(async (req, res) => {
-  const l = get('SELECT * FROM liabilities WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+  const l = await get('SELECT * FROM liabilities WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
   if (!l) throw notFound('Dívida não encontrada');
-  run('DELETE FROM liabilities WHERE id = ?', [l.id]);
-  logAudit({ userId: req.user.id, entity: 'liabilities', entityId: l.id, action: 'delete', summary: `Dívida "${l.name}" excluída`, before: l });
+  await run('DELETE FROM liabilities WHERE id = ?', [l.id]);
+  await logAudit({ userId: req.user.id, entity: 'liabilities', entityId: l.id, action: 'delete', summary: `Dívida "${l.name}" excluída`, before: l });
   res.json({ ok: true });
 }));
 

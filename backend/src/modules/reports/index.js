@@ -18,12 +18,14 @@ const periodSchema = z.object({
   groupBy: z.enum(['day', 'week', 'month', 'year']).optional().default('month'),
 });
 
-/** Agrupamento temporal via strftime — o SQLite resolve sem trazer tudo pra memória. */
+/** Agrupamento temporal resolvido no banco, sem trazer tudo para a memória. */
 const GROUP_EXPR = {
-  day: "strftime('%Y-%m-%d', due_date)",
-  week: "strftime('%Y-W%W', due_date)",
-  month: "strftime('%Y-%m', due_date)",
-  year: "strftime('%Y', due_date)",
+  day: `to_char(due_date, 'YYYY-MM-DD')`,
+  // IYYY/IW usam a semana ISO; o "W" entre aspas duplas é texto literal no
+  // to_char do Postgres, por isso a string JS usa crase.
+  week: `to_char(due_date, 'IYYY-"W"IW')`,
+  month: `to_char(due_date, 'YYYY-MM')`,
+  year: `to_char(due_date, 'YYYY')`,
 };
 
 // ------------------------------------------------------------------
@@ -36,7 +38,7 @@ router.get(
     const { from, to, groupBy } = req.validatedQuery;
     const expr = GROUP_EXPR[groupBy];
 
-    const rows = all(
+    const rows = await all(
       `SELECT ${expr} AS bucket,
               COALESCE(SUM(CASE WHEN kind = 'income'  THEN amount END), 0) AS income,
               COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount END), 0) AS expense,
@@ -85,7 +87,7 @@ router.get(
                   AND status <> 'canceled' AND due_date >= ? AND due_date <= ?`;
     const params = [userId, from, to];
 
-    const totals = get(
+    const totals = await get(
       `SELECT COALESCE(SUM(CASE WHEN kind = 'income'  THEN amount END), 0) AS income,
               COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount END), 0) AS expense,
               COUNT(CASE WHEN kind = 'expense' THEN 1 END) AS expense_count,
@@ -94,7 +96,7 @@ router.get(
       params,
     );
 
-    const biggestExpense = get(
+    const biggestExpense = await get(
       `${TX_SELECT}
         WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.neutral = 0
           AND t.status <> 'canceled' AND t.kind = 'expense'
@@ -103,7 +105,7 @@ router.get(
       params,
     );
 
-    const topCategory = get(
+    const topCategory = await get(
       // GROUP BY 1 aponta para a 1ª coluna do SELECT: "name" sozinho seria
       // ambíguo, já que os dois JOINs de categories também expõem essa coluna.
       `SELECT COALESCE(parent.name, cat.name, 'Sem categoria') AS name,
@@ -115,7 +117,7 @@ router.get(
         WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.neutral = 0
           AND t.status <> 'canceled' AND t.kind = 'expense'
           AND t.due_date >= ? AND t.due_date <= ?
-        GROUP BY 1 ORDER BY total DESC LIMIT 1`,
+        GROUP BY 1, 2 ORDER BY total DESC LIMIT 1`,
       params,
     );
 
@@ -127,19 +129,19 @@ router.get(
     const months = monthsBetween(from, to).length || 1;
 
     // Crescimento patrimonial entre o começo e o fim do período.
-    const netWorthAt = (dateISO) => {
-      const { cash } = get(
+    const netWorthAt = async (dateISO) => {
+      const { cash } = await get(
         `SELECT COALESCE(SUM(CASE WHEN t.kind IN ('income','transfer_in') THEN t.amount ELSE -t.amount END), 0) AS cash
            FROM transactions t
            JOIN accounts a ON a.id = t.account_id AND a.archived = 0 AND a.include_in_total = 1
           WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.status = 'settled' AND t.settle_date <= ?`,
         [userId, dateISO],
       );
-      const { initial } = get(
+      const { initial } = await get(
         'SELECT COALESCE(SUM(initial_balance), 0) AS initial FROM accounts WHERE user_id = ? AND archived = 0 AND include_in_total = 1',
         [userId],
       );
-      const { market } = get(
+      const { market } = await get(
         `SELECT COALESCE(SUM(
                   COALESCE((SELECT v.market_value FROM asset_valuations v
                              WHERE v.investment_id = i.id AND v.date <= ?
@@ -151,13 +153,13 @@ router.get(
       return initial + cash + market;
     };
 
-    const startNet = netWorthAt(from);
-    const endNet = netWorthAt(to);
+    const startNet = await netWorthAt(from);
+    const endNet = await netWorthAt(to);
 
     // Comparação com o período anterior de mesma duração.
     const prevTo = new Date(new Date(from).getTime() - 86400000).toISOString().slice(0, 10);
     const prevFrom = new Date(new Date(prevTo).getTime() - (days - 1) * 86400000).toISOString().slice(0, 10);
-    const prev = get(
+    const prev = await get(
       `SELECT COALESCE(SUM(CASE WHEN kind = 'income'  THEN amount END), 0) AS income,
               COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount END), 0) AS expense
          FROM transactions WHERE ${base}`,
@@ -221,7 +223,7 @@ router.get(
       ? "COALESCE(cat.color, '#94a3b8')"
       : "COALESCE(parent.color, cat.color, '#94a3b8')";
 
-    const rows = all(
+    const rows = await all(
       `SELECT ${groupKey} AS category_id, ${nameExpr} AS name, ${colorExpr} AS color,
               SUM(t.amount) AS total, COUNT(*) AS tx_count,
               AVG(t.amount) AS avg_amount, MAX(t.amount) AS max_amount
@@ -231,7 +233,7 @@ router.get(
         WHERE t.user_id = ? AND t.deleted_at IS NULL AND t.neutral = 0
           AND t.status <> 'canceled' AND t.kind = ?
           AND t.due_date >= ? AND t.due_date <= ?
-        GROUP BY category_id ORDER BY total DESC`,
+        GROUP BY 1, 2, 3 ORDER BY total DESC`,
       [req.user.id, kind, from, to],
     );
 
@@ -248,7 +250,7 @@ router.get(
   validateQuery(z.object({ from: isoDate, to: isoDate })),
   asyncHandler(async (req, res) => {
     const { from, to } = req.validatedQuery;
-    const rows = all(
+    const rows = await all(
       `SELECT a.id, a.name, a.type, a.color,
               COALESCE(SUM(CASE WHEN t.kind = 'income'  THEN t.amount END), 0) AS income,
               COALESCE(SUM(CASE WHEN t.kind = 'expense' THEN t.amount END), 0) AS expense,
@@ -269,7 +271,7 @@ router.get(
   validateQuery(z.object({ from: isoDate, to: isoDate })),
   asyncHandler(async (req, res) => {
     const { from, to } = req.validatedQuery;
-    const rows = all(
+    const rows = await all(
       `SELECT c.id, c.name, c.color, c.limit_amount,
               COALESCE(SUM(t.amount), 0) AS total, COUNT(t.id) AS tx_count
          FROM credit_cards c
@@ -287,13 +289,13 @@ router.get(
   validateQuery(z.object({ from: isoDate, to: isoDate })),
   asyncHandler(async (req, res) => {
     const { from, to } = req.validatedQuery;
-    const rows = all(
+    const rows = await all(
       `SELECT COALESCE(payment_method, 'nao_informado') AS method,
               SUM(amount) AS total, COUNT(*) AS tx_count
          FROM transactions
         WHERE user_id = ? AND deleted_at IS NULL AND neutral = 0 AND kind = 'expense'
           AND status <> 'canceled' AND due_date >= ? AND due_date <= ?
-        GROUP BY method ORDER BY total DESC`,
+        GROUP BY 1 ORDER BY total DESC`,
       [req.user.id, from, to],
     );
     const total = rows.reduce((s, r) => s + r.total, 0);
@@ -310,20 +312,26 @@ router.get(
     const start = addMonths(`${monthKey(today())}-01`, -(months - 1));
     const list = monthsBetween(start, today());
 
+    // Uma consulta agregada para todos os meses, em vez de uma por mês.
+    const rows = await all(
+      `SELECT to_char(due_date, 'YYYY-MM') AS ym,
+              COALESCE(SUM(CASE WHEN kind = 'income'  THEN amount END), 0) AS income,
+              COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount END), 0) AS expense
+         FROM transactions
+        WHERE user_id = ? AND deleted_at IS NULL AND neutral = 0 AND status <> 'canceled'
+          AND due_date >= ? AND due_date <= ?
+        GROUP BY ym`,
+      [req.user.id, monthRange(list[0]).start, monthRange(list.at(-1)).end],
+    );
+    const byMonth = new Map(rows.map((r) => [r.ym, r]));
+
     const data = list.map((ym) => {
-      const r = monthRange(ym);
-      const totals = get(
-        `SELECT COALESCE(SUM(CASE WHEN kind = 'income'  THEN amount END), 0) AS income,
-                COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount END), 0) AS expense
-           FROM transactions
-          WHERE user_id = ? AND deleted_at IS NULL AND neutral = 0 AND status <> 'canceled'
-            AND due_date >= ? AND due_date <= ?`,
-        [req.user.id, r.start, r.end],
-      );
+      const totals = byMonth.get(ym) ?? { income: 0, expense: 0 };
       return {
         month: ym,
         label: `${ym.slice(5)}/${ym.slice(2, 4)}`,
-        ...totals,
+        income: totals.income,
+        expense: totals.expense,
         result: totals.income - totals.expense,
         savings_rate: pct(totals.income - totals.expense, totals.income),
       };
@@ -367,7 +375,7 @@ router.get(
     const { where, params } = buildTxFilters(toFilterInput(req.user.id, q));
 
     // Exportação ignora paginação: leva o filtro inteiro, com teto de segurança.
-    const rows = all(`${TX_SELECT} WHERE ${where} ORDER BY t.due_date ASC LIMIT 20000`, params)
+    const rows = (await all(`${TX_SELECT} WHERE ${where} ORDER BY t.due_date ASC LIMIT 20000`, params))
       .map((r) => {
         const tx = serializeTx(r);
         return { ...tx, kind_label: r.kind === 'income' ? 'Receita' : 'Despesa' };
