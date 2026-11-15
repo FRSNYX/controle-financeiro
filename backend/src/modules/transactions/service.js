@@ -269,7 +269,10 @@ export async function materializeRecurrence(userId, recurrenceId) {
 export async function runAllRecurrences(userId) {
   const list = await all('SELECT id FROM recurrences WHERE user_id = ? AND active = 1', [userId]);
   let total = 0;
-  for (const r of list) total += await materializeRecurrence(userId, r.id).length;
+  for (const r of list) {
+    const created = await materializeRecurrence(userId, r.id);
+    total += created.length;
+  }
   return total;
 }
 
