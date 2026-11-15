@@ -46,8 +46,8 @@ export function createApp() {
         // Sem Origin = mesma origem ou ferramenta local (curl, Postman).
         if (!origin) return cb(null, true);
         if (allowed.has(origin)) return cb(null, true);
-        // Qualquer subdomínio de pré-visualização da própria aplicação.
-        if (/^https:\/\/[\w-]+\.vercel\.app$/.test(origin) && process.env.VERCEL) return cb(null, true);
+        // Somente a URL desta implantação e o domínio de produção são liberados
+        // automaticamente. Outros frontends devem ser listados em CORS_ORIGINS.
         return cb(new Error(`Origem não permitida: ${origin}`));
       },
       credentials: true,
