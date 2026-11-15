@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Sistema completo de controle financeiro pessoal",
   "engines": {
-    "node": ">=20"
+    "node": "24.x"
   },
   "scripts": {
     "dev": "npm --prefix backend run dev",
