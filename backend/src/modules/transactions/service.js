@@ -71,10 +71,13 @@ async function assertOwnership(userId, data) {
       throw badRequest(`${label} não encontrado(a)`);
     }
   };
-  check('accounts', data.account_id, 'Conta');
-  check('categories', data.category_id, 'Categoria');
-  check('categories', data.subcategory_id, 'Subcategoria');
-  check('credit_cards', data.card_id, 'Cartão');
+  // Todas as verificações precisam terminar antes de criar o lançamento.
+  await Promise.all([
+    check('accounts', data.account_id, 'Conta'),
+    check('categories', data.category_id, 'Categoria'),
+    check('categories', data.subcategory_id, 'Subcategoria'),
+    check('credit_cards', data.card_id, 'Cartão'),
+  ]);
 }
 
 const INSERT_SQL = `
