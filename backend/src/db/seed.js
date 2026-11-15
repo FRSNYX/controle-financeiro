@@ -3,12 +3,18 @@
  * Uso: npm run seed  (cria/reaproveita o usuário demo@financas.local)
  */
 import { migrate } from './migrate.js';
+import { env } from '../config/env.js';
 import { all, get, run, transaction } from './index.js';
 import { seedUserDefaults } from './defaults.js';
 import { hashPassword } from '../utils/password.js';
 import { toCents } from '../utils/money.js';
 import { today, addMonths, monthKey, safeDate } from '../utils/dates.js';
 import { createTransaction } from '../modules/transactions/service.js';
+
+if (env.nodeEnv === 'production' || env.isServerless) {
+  console.error('Seed de demonstração bloqueado: não pode ser executado em produção/serverless.');
+  process.exit(1);
+}
 
 const EMAIL = 'demo@financas.local';
 const SENHA = 'demo1234';
