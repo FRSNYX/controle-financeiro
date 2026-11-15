@@ -63,8 +63,12 @@ async function init() {
       // O serverless abre muitas instâncias; um teto baixo por instância evita
       // estourar o limite de conexões do banco.
       max: env.dbPoolMax,
-      idleTimeoutMillis: 10_000,
-      connectionTimeoutMillis: 15_000,
+      min: 0,
+      idleTimeoutMillis: env.dbIdleTimeoutMs,
+      connectionTimeoutMillis: env.dbConnectionTimeoutMs,
+      statement_timeout: env.dbStatementTimeoutMs,
+      query_timeout: env.dbStatementTimeoutMs,
+      allowExitOnIdle: true,
       ssl: env.databaseUrl.includes('sslmode=disable') ? false : { rejectUnauthorized: false },
     });
 
