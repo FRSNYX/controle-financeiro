@@ -2,7 +2,7 @@
 
 Sistema de controle financeiro pessoal: receitas, despesas, contas, cartões, investimentos, orçamento, metas e projeção de patrimônio. Interface em português, valores em R$ e datas em DD/MM/AAAA.
 
-**Demo:** https://controle-financeiro-frandev1.vercel.app
+**Aplicação:** https://controle-financeiro-frandev1.vercel.app
 
 <!-- Adicione aqui 2 ou 3 prints das telas (dashboard, cartões, investimentos) -->
 
