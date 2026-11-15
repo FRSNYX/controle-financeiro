@@ -190,7 +190,7 @@ router.post(
     if (!emailResponse.ok) {
       await run('UPDATE users SET reset_token = NULL, reset_expires = NULL WHERE id = ?', [user.id]);
       console.error('[auth] Falha ao enviar e-mail de recuperação:', emailResponse.status);
-      return res.status(503).json({ error: 'Não foi possível enviar o e-mail de recuperação. Tente novamente mais tarde.' });
+      return res.json(response);
     }
     res.json(response);
   }),
