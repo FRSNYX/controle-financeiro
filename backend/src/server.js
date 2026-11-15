@@ -30,9 +30,13 @@ async function dailyMaintenance() {
   }
 }
 
-dailyMaintenance();
-const maintenanceTimer = setInterval(dailyMaintenance, 24 * 60 * 60 * 1000);
-maintenanceTimer.unref();
+// Em serverless, timers não são duráveis e a manutenção seria repetida em
+// cada instância fria. Execute-a por Cron externo/endpoint protegido no futuro.
+if (!env.isServerless) {
+  dailyMaintenance();
+  const maintenanceTimer = setInterval(dailyMaintenance, 24 * 60 * 60 * 1000);
+  maintenanceTimer.unref();
+}
 
 const app = createApp();
 
