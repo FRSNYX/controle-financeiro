@@ -2,7 +2,7 @@
 
 Sistema de controle financeiro pessoal: receitas, despesas, contas, cartões, investimentos, orçamento, metas e projeção de patrimônio. Interface em português, valores em R$ e datas em DD/MM/AAAA.
 
-**Demo:** https://controle-financeiro-frandev1.vercel.app
+**Aplicação:** https://controle-financeiro-frandev1.vercel.app
 
 <!-- Adicione aqui 2 ou 3 prints das telas (dashboard, cartões, investimentos) -->
 
@@ -23,7 +23,7 @@ Sistema de controle financeiro pessoal: receitas, despesas, contas, cartões, in
 |---|---|
 | Frontend | React, Vite, React Router, TanStack Query, Tailwind CSS, Recharts |
 | Backend | Node.js, Express, Zod, JWT |
-| Banco | PostgreSQL (Neon em produção, PGlite embarcado em desenvolvimento) |
+| Banco | PostgreSQL (Neon PostgreSQL em produção (conforme configuração atual), PGlite embarcado em desenvolvimento) |
 | Deploy | Vercel |
 
 ## Como rodar
