@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Check, X } from 'lucide-react';
 import { useAuth, useToast } from '../context/AppProviders';
+import { api } from '../lib/api';
 import { Button, Input, Field, cx } from '../components/ui';
 import AuthShell from './AuthShell';
 
@@ -20,10 +21,12 @@ export default function Register() {
   const [form, setForm] = useState({ name: '', email: '', password: '', confirm: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [signupEnabled, setSignupEnabled] = useState(true);
+  useEffect(() => { api.get('/auth/config').then((c) => setSignupEnabled(c.allowSignup)).catch(() => {}); }, []);
 
   const passwordOk = RULES.every((r) => r.test(form.password));
   const matches = form.password === form.confirm;
-  const canSubmit = form.name.trim().length >= 2 && form.email.includes('@') && passwordOk && matches;
+  const canSubmit = signupEnabled && form.name.trim().length >= 2 && form.email.includes('@') && passwordOk && matches;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -55,6 +58,9 @@ export default function Register() {
         </>
       }
     >
+      {!signupEnabled ? (
+        <div className="rounded-lg border border-line bg-surface-2 px-3 py-3 text-sm text-muted">O cadastro de novas contas está temporariamente desativado. Entre em contato com o suporte para obter acesso.</div>
+      ) : (
       <form onSubmit={submit} className="space-y-4">
         <Field label="Nome completo" required>
           <Input
@@ -130,6 +136,7 @@ export default function Register() {
           Criar conta
         </Button>
       </form>
+      )}
     </AuthShell>
   );
 }

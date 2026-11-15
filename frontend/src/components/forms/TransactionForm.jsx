@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Repeat, Layers, Paperclip, Info } from 'lucide-react';
 import { api } from '../../lib/api';
+import { useToast } from '../../context/AppProviders';
 import {
   Modal, Button, Input, Select, Textarea, Field, MoneyInput, Checkbox, cx, Badge,
 } from '../ui';
@@ -42,6 +43,12 @@ export default function TransactionForm({ open, onClose, kind, transaction, onSa
   const [useRecurrence, setUseRecurrence] = useState(false);
   const [recurrence, setRecurrence] = useState({ frequency: 'monthly', interval_n: 1, end_date: '', max_count: '' });
   const [files, setFiles] = useState([]);
+  const [uploadsEnabled, setUploadsEnabled] = useState(false);
+  const toast = useToast();
+
+  useEffect(() => {
+    api.get('/auth/config').then((config) => setUploadsEnabled(!!config.uploadsEnabled)).catch(() => setUploadsEnabled(false));
+  }, []);
 
   const { data: accountsData } = useAccounts();
   const { data: categoriesData } = useCategories(kind);
@@ -451,17 +458,24 @@ export default function TransactionForm({ open, onClose, kind, transaction, onSa
 
           {!isEdit && (
             <Field label="Anexos" hint="Comprovantes: imagem ou PDF, até 5 arquivos">
-              <label className="flex items-center gap-2 h-10 px-3 rounded-lg border border-dashed border-line cursor-pointer hover:border-brand text-sm text-muted">
-                <Paperclip size={15} />
-                {files.length ? `${files.length} arquivo(s) selecionado(s)` : 'Escolher arquivos'}
-                <input
-                  type="file"
-                  multiple
-                  accept="image/*,application/pdf"
-                  className="hidden"
-                  onChange={(e) => setFiles([...e.target.files].slice(0, 5))}
-                />
-              </label>
+              {uploadsEnabled ? (
+                <label className="flex items-center gap-2 h-10 px-3 rounded-lg border border-dashed border-line cursor-pointer hover:border-brand text-sm text-muted">
+                  <Paperclip size={15} />
+                  {files.length ? `${files.length} arquivo(s) selecionado(s)` : 'Escolher arquivos'}
+                  <input
+                    type="file"
+                    multiple
+                    accept="image/*,application/pdf"
+                    className="hidden"
+                    onChange={(e) => setFiles([...e.target.files].slice(0, 5))}
+                  />
+                </label>
+              ) : (
+                <button type="button" onClick={() => toast.warning('Anexos indisponíveis nesta versão publicada.')} className="flex items-center gap-2 h-10 px-3 rounded-lg border border-dashed border-line text-sm text-muted">
+                  <Paperclip size={15} />
+                  Anexos indisponíveis nesta versão
+                </button>
+              )}
             </Field>
           )}
         </div>

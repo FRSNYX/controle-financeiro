@@ -52,7 +52,7 @@ npm run dev
 
 A aplicação abre em `http://localhost:5173`.
 
-**Conta de demonstração** (após `npm run seed`): `demo@financas.local` / `demo1234`
+**Dados de demonstração:** disponíveis somente em ambiente local, após `npm run seed`. Nunca execute o seed em produção.
 
 ## Estrutura
 
@@ -98,5 +98,6 @@ Na versão publicada, o envio de anexos fica desativado, pois o servidor não te
 
 - Definir `JWT_SECRET` (a aplicação não sobe em produção com o valor padrão).
 - Ajustar `CORS_ORIGINS` para o seu domínio.
-- Configurar um serviço de e-mail para a recuperação de senha (ponto de integração em `backend/src/modules/auth/index.js`).
+- Configurar Resend (`RESEND_API_KEY`, `EMAIL_FROM` e `APP_URL`) para recuperação de senha.
+- Definir `ALLOW_SIGNUP=false` quando quiser fechar novos cadastros.
 - Manter backup do banco (no Neon, pelo painel do provedor).

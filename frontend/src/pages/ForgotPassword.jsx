@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { MailCheck, ArrowLeft } from 'lucide-react';
 import { api } from '../lib/api';
 import { useToast } from '../context/AppProviders';
@@ -8,15 +8,16 @@ import AuthShell from './AuthShell';
 
 /**
  * Dois passos na mesma tela: pedir o token e usá-lo para trocar a senha.
- * Sem servidor de e-mail configurado, o backend devolve o token em `devToken`
- * (só fora de produção) para o fluxo poder ser concluído.
+ * Em desenvolvimento, sem provedor, o backend pode devolver `devToken`.
  */
 export default function ForgotPassword() {
   const toast = useToast();
-  const [step, setStep] = useState('request');
+  const [searchParams] = useSearchParams();
+  const tokenFromLink = searchParams.get('token') ?? '';
+  const [step, setStep] = useState(tokenFromLink ? 'reset' : 'request');
   const [email, setEmail] = useState('');
   const [devToken, setDevToken] = useState(null);
-  const [form, setForm] = useState({ token: '', password: '', confirm: '' });
+  const [form, setForm] = useState({ token: tokenFromLink, password: '', confirm: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 

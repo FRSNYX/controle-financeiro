@@ -45,6 +45,10 @@ export const env = {
   jwtSecret: process.env.JWT_SECRET ?? 'troque-este-segredo-em-producao',
   accessTtlMin: int(process.env.ACCESS_TTL_MIN, 15),
   refreshTtlDays: int(process.env.REFRESH_TTL_DAYS, 7),
+  allowSignup: process.env.ALLOW_SIGNUP !== 'false',
+  resendApiKey: process.env.RESEND_API_KEY ?? null,
+  emailFrom: process.env.EMAIL_FROM ?? null,
+  appUrl: process.env.APP_URL ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? 'https://' + process.env.VERCEL_PROJECT_PRODUCTION_URL : 'http://localhost:5173'),
 
   corsOrigins: (process.env.CORS_ORIGINS ?? 'http://localhost:5173,http://127.0.0.1:5173')
     .split(',')
