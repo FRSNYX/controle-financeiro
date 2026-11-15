@@ -5,7 +5,7 @@
       "root": "./",
       "entrypoint": "server.js",
       "installCommand": "npm install && npm --prefix frontend install",
-      "buildCommand": "npm --prefix frontend run build"
+      "buildCommand": "npm --prefix backend run migrate && npm --prefix frontend run build"
     }
   },
   "rewrites": [
