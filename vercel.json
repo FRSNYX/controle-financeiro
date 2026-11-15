@@ -5,7 +5,7 @@
       "root": "./",
       "entrypoint": "server.js",
       "installCommand": "npm install && npm --prefix frontend install",
-      "buildCommand": "npm audit --json || true; npm --prefix frontend audit --json || true; if [ \"$VERCEL_ENV\" = \"production\" ]; then npm --prefix backend run migrate; fi && npm --prefix frontend run build"
+      "buildCommand": "if [ \"$VERCEL_ENV\" = \"production\" ]; then npm --prefix backend run migrate; fi && npm --prefix frontend run build"
     }
   },
   "rewrites": [
