@@ -58,14 +58,22 @@ async function init() {
       pg.types.setTypeParser(Number(oid), parser);
     }
 
+    const databaseUrl = new URL(env.databaseUrl);
+    const sslDisabled = databaseUrl.searchParams.get('sslmode') === 'disable';
+    if (!sslDisabled) databaseUrl.searchParams.set('sslmode', 'verify-full');
+
     const pool = new pg.Pool({
-      connectionString: env.databaseUrl,
+      connectionString: databaseUrl.toString(),
       // O serverless abre muitas instâncias; um teto baixo por instância evita
       // estourar o limite de conexões do banco.
       max: env.dbPoolMax,
-      idleTimeoutMillis: 10_000,
-      connectionTimeoutMillis: 15_000,
-      ssl: env.databaseUrl.includes('sslmode=disable') ? false : { rejectUnauthorized: false },
+      min: 0,
+      idleTimeoutMillis: env.dbIdleTimeoutMs,
+      connectionTimeoutMillis: env.dbConnectionTimeoutMs,
+      statement_timeout: env.dbStatementTimeoutMs,
+      query_timeout: env.dbStatementTimeoutMs,
+      allowExitOnIdle: true,
+      ssl: sslDisabled ? false : { rejectUnauthorized: true },
     });
 
     pool.on('error', (err) => console.error('[db] erro no pool:', err.message));

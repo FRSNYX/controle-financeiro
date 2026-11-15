@@ -37,7 +37,10 @@ export const env = {
   /** Sem URL, o backend sobe com Postgres embarcado (PGlite) em arquivo local. */
   databaseUrl,
   pgliteDir: process.env.PGLITE_DIR ?? localDataDir,
-  dbPoolMax: int(process.env.DB_POOL_MAX, 3),
+  dbPoolMax: Math.min(5, Math.max(1, int(process.env.DB_POOL_MAX, 2))),
+  dbConnectionTimeoutMs: int(process.env.DB_CONNECTION_TIMEOUT_MS, 8000),
+  dbIdleTimeoutMs: int(process.env.DB_IDLE_TIMEOUT_MS, 10000),
+  dbStatementTimeoutMs: int(process.env.DB_STATEMENT_TIMEOUT_MS, 20000),
 
   uploadDir: process.env.UPLOAD_DIR ?? path.join(ROOT, 'uploads'),
   backupDir: process.env.BACKUP_DIR ?? path.join(ROOT, 'data', 'backups'),
