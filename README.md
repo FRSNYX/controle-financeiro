@@ -23,7 +23,7 @@ Sistema de controle financeiro pessoal: receitas, despesas, contas, cartões, in
 |---|---|
 | Frontend | React, Vite, React Router, TanStack Query, Tailwind CSS, Recharts |
 | Backend | Node.js, Express, Zod, JWT |
-| Banco | PostgreSQL (Neon PostgreSQL em produção (conforme configuração atual), PGlite embarcado em desenvolvimento) |
+| Banco | PostgreSQL (Neon em produção, PGlite embarcado em desenvolvimento) |
 | Deploy | Vercel |
 
 ## Como rodar
