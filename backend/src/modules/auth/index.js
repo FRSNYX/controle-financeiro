@@ -209,12 +209,14 @@ router.post(
 
     const { hash, salt } = hashPassword(req.body.password);
     await transaction(async () => {
-      await run(
+      // Consumo atômico: duas requisições simultâneas não conseguem reutilizar o token.
+      const consumed = await run(
         `UPDATE users SET password_hash = ?, password_salt = ?, reset_token = NULL,
                           reset_expires = NULL, updated_at = NOW()
-         WHERE id = ?`,
-        [hash, salt, user.id],
+         WHERE id = ? AND reset_token = ? AND reset_expires > NOW()`,
+        [hash, salt, user.id, tokenHash],
       );
+      if (consumed.changes !== 1) throw badRequest('Token inválido ou expirado. Solicite uma nova recuperação.');
       // Trocar a senha derruba todas as sessões abertas.
       await run("UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ?", [user.id]);
     });
