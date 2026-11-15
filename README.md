@@ -90,7 +90,8 @@ npm run test:pwa            # requisitos de app instalável
 2. Crie um banco Postgres (Neon) na aba **Storage**. A `DATABASE_URL` é configurada automaticamente.
 3. Defina `JWT_SECRET` em **Environment Variables** com um valor longo e aleatório.
 4. Desative o **Vercel Authentication** em **Deployment Protection** para o site ficar público.
-5. Faça o **Redeploy**. As tabelas são criadas na primeira requisição.
+5. Configure `DB_POOL_MAX=2`, `DB_CONNECTION_TIMEOUT_MS=8000`, `DB_IDLE_TIMEOUT_MS=10000` e `DB_STATEMENT_TIMEOUT_MS=20000`.
+6. As migrations são executadas durante o build do deploy; a primeira requisição não precisa criar o schema.
 
 Na versão publicada, o envio de anexos fica desativado, pois o servidor não tem disco permanente.
 
