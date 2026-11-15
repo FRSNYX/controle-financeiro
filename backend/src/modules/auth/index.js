@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { createHash } from 'node:crypto';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { get, run, transaction } from '../../db/index.js';
@@ -11,6 +12,7 @@ import { logAudit } from '../../utils/audit.js';
 import { env, isProd } from '../../config/env.js';
 
 const router = Router();
+router.get('/config', (_req, res) => res.json({ allowSignup: env.allowSignup, uploadsEnabled: env.uploadsEnabled }));
 
 // Freio contra força bruta. Janela curta o bastante para não punir o usuário legítimo.
 const authLimiter = rateLimit({
@@ -65,6 +67,7 @@ router.post(
   authLimiter,
   validate(registerSchema),
   asyncHandler(async (req, res) => {
+    if (!env.allowSignup) throw badRequest('O cadastro de novas contas está temporariamente desativado. Entre em contato com o suporte.');
     const { name, email, password } = req.body;
 
     if (await get('SELECT id FROM users WHERE email = ?', [email])) {
@@ -165,25 +168,31 @@ router.post(
   authLimiter,
   validate(z.object({ email: z.string().trim().toLowerCase().email() })),
   asyncHandler(async (req, res) => {
+    if (isProd && (!env.resendApiKey || !env.emailFrom)) {
+      return res.status(503).json({ error: 'A recuperação de senha está temporariamente indisponível. Tente novamente mais tarde.' });
+    }
     const user = await get('SELECT * FROM users WHERE email = ?', [req.body.email]);
-
-    // Resposta idêntica exista ou não o e-mail — não confirma cadastros a terceiros.
-    const response = {
-      ok: true,
-      message: 'Se o e-mail estiver cadastrado, enviaremos as instruções de recuperação.',
-    };
-
+    const response = { ok: true, message: 'Se o e-mail estiver cadastrado, enviaremos as instruções de recuperação.' };
     if (!user) return res.json(response);
-
     const token = randomToken(32);
-    const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hora
-    run('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?', [token, expires, user.id]);
-
-    // Sem servidor de e-mail configurado, o token sai no log do servidor.
-    // Em produção, plugue aqui o envio real (SMTP/serviço transacional).
-    console.log(`\n[recuperacao de senha] ${user.email} -> token: ${token}\n`);
-
-    res.json(isProd ? response : { ...response, devToken: token });
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    await run('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?', [tokenHash, expires, user.id]);
+    if (!isProd && !env.resendApiKey) return res.json({ ...response, devToken: token });
+    const resetUrl = new URL('/recuperar-senha', env.appUrl);
+    resetUrl.searchParams.set('token', token);
+    const emailResponse = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + env.resendApiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: env.emailFrom, to: [user.email], subject: 'Recuperação de senha — Controle Financeiro',
+        html: '<p>Recebemos uma solicitação para redefinir sua senha.</p><p><a href="' + resetUrl.toString() + '">Criar uma nova senha</a></p><p>Este link expira em 15 minutos e só pode ser usado uma vez. Se você não solicitou, ignore este e-mail.</p>' }),
+    });
+    if (!emailResponse.ok) {
+      await run('UPDATE users SET reset_token = NULL, reset_expires = NULL WHERE id = ?', [user.id]);
+      console.error('[auth] Falha ao enviar e-mail de recuperação:', emailResponse.status);
+      return res.status(503).json({ error: 'Não foi possível enviar o e-mail de recuperação. Tente novamente mais tarde.' });
+    }
+    res.json(response);
   }),
 );
 
@@ -192,7 +201,8 @@ router.post(
   authLimiter,
   validate(z.object({ token: z.string().min(10), password: passwordRule })),
   asyncHandler(async (req, res) => {
-    const user = await get('SELECT * FROM users WHERE reset_token = ?', [req.body.token]);
+    const tokenHash = createHash('sha256').update(req.body.token).digest('hex');
+    const user = await get('SELECT * FROM users WHERE reset_token = ?', [tokenHash]);
     if (!user || !user.reset_expires || new Date(user.reset_expires) < new Date()) {
       throw badRequest('Token inválido ou expirado. Solicite uma nova recuperação.');
     }
@@ -206,7 +216,7 @@ router.post(
         [hash, salt, user.id],
       );
       // Trocar a senha derruba todas as sessões abertas.
-      run("UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ?", [user.id]);
+      await run("UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ?", [user.id]);
     });
 
     await logAudit({ userId: user.id, entity: 'users', entityId: user.id, action: 'update', summary: 'Senha redefinida' });
