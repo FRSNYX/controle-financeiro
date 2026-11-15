@@ -16,7 +16,7 @@ export default defineConfig({
 
       manifest: {
         name: 'Controle Financeiro',
-        short_name: 'Finanças',
+        short_name: 'Controle Financeiro',
         description:
           'Receitas, despesas, cartões, investimentos, metas e patrimônio — tudo em um lugar.',
         lang: 'pt-BR',
